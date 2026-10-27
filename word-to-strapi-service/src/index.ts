@@ -107,8 +107,11 @@ app.post(
         preview: {
           payload: validation.data,
           fields: aiResult.fields,
+          fieldStates: aiResult.fieldStates,
           missingFields: aiResult.missingFields,
+          unmappedFields: aiResult.unmappedFields,
           ambiguities: aiResult.ambiguities,
+          warnings: aiResult.warnings,
           confidence: aiResult.confidence,
           imageCount: doc.images.length,
           wordCount: doc.metadata.wordCount,
@@ -154,19 +157,23 @@ app.post('/api/import/confirm', requireApiKey, async (req: Request, res: Respons
       }
     }
 
+    const coverImageIndex = pending.aiResult.fieldStates.cover.imageIndex;
+    const coverImage = coverImageIndex === undefined
+      ? undefined
+      : pending.images.find((image) => image.index === coverImageIndex);
+    if (coverImageIndex !== undefined && !coverImage) {
+      throw new Error(`Cover field references image ${coverImageIndex}, but that image is unavailable.`);
+    }
+
     // Phase 5: create draft (drafts only, never published)
     const created = await strapi.createDraft(pending.payload);
     console.log(`[confirm] Created draft documentId=${created.documentId}`);
 
-    // Upload cover image if real binary images exist
+    // Upload only an embedded image explicitly associated with the Cover field.
     let uploadedImageId: number | null = null;
-    if (pending.images.length > 0) {
-      try {
-        uploadedImageId = await strapi.uploadMedia(pending.images[0], created.id, 'coverImage');
-        console.log(`[confirm] Uploaded coverImage mediaId=${uploadedImageId}`);
-      } catch (imgErr: any) {
-        console.warn('[confirm] Image upload failed (entry still created):', imgErr?.message);
-      }
+    if (coverImage) {
+      uploadedImageId = await strapi.uploadMedia(coverImage, created.id, 'coverImage');
+      console.log(`[confirm] Uploaded coverImage mediaId=${uploadedImageId}`);
     }
 
     // Verify: re-fetch and diff
@@ -239,11 +246,32 @@ export function diffPayload(
     if (isExpectedEmpty && isActualEmpty) {
       continue;
     }
-    if (val !== act) {
+    if (!matchesExpectedValue(val, act)) {
       mismatches.push(
         `${key}: expected "${String(val)?.substring(0, 60)}", got "${String(act)?.substring(0, 60)}"`
       );
     }
   }
   return mismatches;
+}
+
+function matchesExpectedValue(expected: unknown, actual: unknown): boolean {
+  if (expected === null || expected === undefined) {
+    return actual === null || actual === undefined || actual === '';
+  }
+  if (Array.isArray(expected)) {
+    return Array.isArray(actual) &&
+      expected.length === actual.length &&
+      expected.every((value, index) => matchesExpectedValue(value, actual[index]));
+  }
+  if (isRecordValue(expected)) {
+    const actualRecord = isRecordValue(actual) && isRecordValue(actual.data) ? actual.data : actual;
+    return isRecordValue(actualRecord) &&
+      Object.entries(expected).every(([key, value]) => matchesExpectedValue(value, actualRecord[key]));
+  }
+  return expected === actual;
+}
+
+function isRecordValue(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

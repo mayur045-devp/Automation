@@ -115,7 +115,14 @@ export class StrapiClient {
 
   /** Fetch an article by documentId to verify saved data. */
   async getByDocumentId(documentId: string): Promise<Record<string, unknown>> {
-    const url = `${this.baseUrl}/api/articles/${documentId}?status=draft&populate=coverImage`;
+    const query = new URLSearchParams({
+      status: 'draft',
+      'populate[coverImage]': 'true',
+      'populate[seo]': 'true',
+      'populate[Authordata]': 'true',
+      'populate[button]': 'true',
+    });
+    const url = `${this.baseUrl}/api/articles/${encodeURIComponent(documentId)}?${query.toString()}`;
     const res = await this.fetchWithTimeout(url, { headers: this.headers });
     if (!res.ok) await this.throwStrapiError(res);
     const json = await res.json() as any;

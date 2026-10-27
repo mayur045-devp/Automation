@@ -14,22 +14,74 @@
     "Title": {
       "type": "string"
     },
-    "slug": {
-      "type": "uid",
-      "targetField": "Title",
-      "required": false
-    },
     "description": {
       "type": "text"
     },
     "content": {
       "type": "richtext"
     },
+    "date": {
+      "type": "date"
+    },
+    "slug": {
+      "type": "uid",
+      "targetField": "Title",
+      "required": false
+    },
+    "seo": {
+      "type": "component",
+      "component": "seo.seo",
+      "repeatable": false
+    },
     "coverImage": {
       "type": "media",
       "multiple": false,
       "required": false,
-      "allowedTypes": ["images"]
+      "allowedTypes": [
+        "images"
+      ]
+    },
+    "tital_blog_category": {
+      "type": "relation",
+      "relation": "oneToOne",
+      "target": "api::article.article"
+    },
+    "Authordata": {
+      "type": "component",
+      "component": "component.author-data",
+      "repeatable": false
+    },
+    "categoryName": {
+      "type": "string"
+    },
+    "contentNew": {
+      "type": "component",
+      "component": "component.content-new",
+      "repeatable": false
+    },
+    "button": {
+      "type": "component",
+      "component": "component.button",
+      "repeatable": false
+    },
+    "buttontitle": {
+      "type": "string"
+    },
+    "time": {
+      "type": "string"
+    },
+    "buttonsubtitle": {
+      "type": "string"
+    },
+    "polldata": {
+      "type": "component",
+      "component": "component.polldata",
+      "repeatable": false
+    },
+    "Quizedata": {
+      "type": "component",
+      "component": "component.quizedata",
+      "repeatable": false
     }
   }
 }

@@ -129,6 +129,27 @@
   function confidenceColor(c) {
     return c === 'high' ? '#22c55e' : c === 'medium' ? '#f59e0b' : '#ef4444';
   }
+
+  function getNestedValue(object, path) {
+    return path.split('.').reduce((value, part) => value?.[part], object);
+  }
+
+  function fieldDisplayValue(key, state) {
+    const value = getNestedValue(preview?.fields, key);
+    if (value !== undefined && value !== null && value !== '') {
+      return typeof value === 'string' ? value : JSON.stringify(value);
+    }
+    if (state.rawValue) return state.rawValue;
+    if (state.status === 'explicitly_empty') return '(explicitly empty)';
+    if (state.status === 'missing') return '(not present in document)';
+    if (state.status === 'unresolved') return '(manual resolution needed)';
+    if (state.status === 'invalid') return '(invalid value)';
+    return '(no value)';
+  }
+
+  function payloadDisplayValue(value) {
+    return typeof value === 'string' ? value : JSON.stringify(value);
+  }
 </script>
 
 <div class="import-page">
@@ -211,18 +232,35 @@
   {#if step === 'previewing' && preview}
     <div class="preview-card">
       <div class="preview-header">
-        <span class="section-label">Field Mapping Preview</span>
+        <span class="section-label">Document Extraction Preview</span>
         <span class="confidence-badge" style="color:{confidenceColor(preview.confidence)}">
           ● {preview.confidence} confidence
         </span>
       </div>
 
-      <!-- Mapped fields -->
+      <h3 class="preview-subtitle">All recognized document fields</h3>
+      <div class="field-grid">
+        {#each Object.entries(preview.fieldStates ?? {}) as [key, state]}
+          <div class="field-row">
+            <div class="field-key">{key}</div>
+            <div class="field-val">
+              <span class={`state-badge state-${state.status}`}>{state.status.replaceAll('_', ' ')}</span>
+              {#if state.uploadStatus}
+                <span class={`state-badge upload-${state.uploadStatus}`}>upload: {state.uploadStatus.replaceAll('_', ' ')}</span>
+              {/if}
+              <span>{fieldDisplayValue(key, state)}</span>
+              {#if state.reason}<small>{state.reason}</small>{/if}
+            </div>
+          </div>
+        {/each}
+      </div>
+
+      <h3 class="preview-subtitle">Ready for Strapi draft</h3>
       <div class="field-grid">
         {#each Object.entries(preview.payload) as [key, val]}
           <div class="field-row">
             <div class="field-key">{key}</div>
-            <div class="field-val">{String(val).substring(0, 200)}</div>
+            <div class="field-val">{payloadDisplayValue(val).substring(0, 300)}</div>
           </div>
         {/each}
       </div>
@@ -249,6 +287,24 @@
         <div class="info-block">
           <strong>ℹ Ambiguities (review recommended):</strong>
           <ul>{#each preview.ambiguities as a}<li>{a}</li>{/each}</ul>
+        </div>
+      {/if}
+
+      {#if preview.unmappedFields?.length > 0}
+        <div class="info-block">
+          <strong>Fields retained for manual mapping:</strong>
+          <ul>
+            {#each preview.unmappedFields as field}
+              <li><strong>{field.label}:</strong> {field.value}</li>
+            {/each}
+          </ul>
+        </div>
+      {/if}
+
+      {#if preview.warnings?.length > 0}
+        <div class="warning-block">
+          <strong>Warnings:</strong>
+          <ul>{#each preview.warnings as warning}<li>{warning}</li>{/each}</ul>
         </div>
       {/if}
 
@@ -474,6 +530,12 @@
     color: var(--text-muted, #6b7280);
   }
 
+  .preview-subtitle {
+    margin: 4px 0 -8px;
+    font-size: 0.9rem;
+    color: var(--text-primary, #f1f1f5);
+  }
+
   .confidence-badge {
     font-size: 0.78rem;
     font-weight: 600;
@@ -493,7 +555,35 @@
   }
 
   .field-key { font-weight: 600; color: #818cf8; font-family: monospace; }
-  .field-val { color: var(--text-secondary, #a1a1aa); word-break: break-word; }
+  .field-val {
+    color: var(--text-secondary, #a1a1aa);
+    word-break: break-word;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 5px;
+  }
+
+  .field-val small { color: var(--text-muted, #6b7280); }
+
+  .state-badge {
+    font-size: 0.68rem;
+    line-height: 1;
+    text-transform: uppercase;
+    border-radius: 999px;
+    padding: 4px 7px;
+    background: rgba(148, 163, 184, 0.12);
+    color: #cbd5e1;
+  }
+
+  .state-extracted { color: #4ade80; background: rgba(34, 197, 94, 0.12); }
+  .state-explicitly_empty { color: #94a3b8; }
+  .state-unresolved, .state-requires_review { color: #fbbf24; background: rgba(245, 158, 11, 0.12); }
+  .state-invalid { color: #f87171; background: rgba(239, 68, 68, 0.12); }
+  .state-missing { color: #94a3b8; }
+  .upload-ready { color: #4ade80; background: rgba(34, 197, 94, 0.12); }
+  .upload-manual, .upload-unsupported, .upload-blocked { color: #fbbf24; background: rgba(245, 158, 11, 0.12); }
+  .upload-not_ready { color: #94a3b8; }
 
   .stats-row {
     display: flex;

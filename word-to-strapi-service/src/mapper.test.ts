@@ -1,12 +1,20 @@
 import { describe, it, expect, vi } from 'vitest';
 import { ruleBasedMapping, mapDocumentToArticle } from '../src/mapper.js';
-import { buildStrapiPayload, validateArticlePayload } from '../src/schema.js';
+import {
+  buildStrapiPayload,
+  DOCUMENT_FIELD_KEYS,
+  DOCUMENT_FIELD_MAPPINGS,
+  validateArticlePayload,
+} from '../src/schema.js';
 import { StrapiClient } from '../src/strapiClient.js';
 import { diffPayload } from '../src/index.js';
 import type { ExtractedDocument } from '../src/extract.js';
 
 function createMockDoc(overrides: Partial<ExtractedDocument> = {}): ExtractedDocument {
-  return {
+  const fieldStates = Object.fromEntries(
+    DOCUMENT_FIELD_KEYS.map((key) => [key, { status: 'missing' as const }])
+  ) as ExtractedDocument['fieldStates'];
+  const doc: ExtractedDocument = {
     title: 'Default Title',
     description: 'Default Description',
     slug: null,
@@ -23,8 +31,45 @@ function createMockDoc(overrides: Partial<ExtractedDocument> = {}): ExtractedDoc
       filename: 'test.docx',
     },
     parsedFields: {},
+    fieldStates,
+    unmappedFields: [],
     ...overrides,
   };
+  doc.fieldStates = { ...fieldStates, ...overrides.fieldStates };
+
+  const values: Record<string, unknown> = {
+    title: doc.parsedFields.title ?? doc.title,
+    description: doc.parsedFields.description ?? doc.description,
+    slug: doc.parsedFields.slug ?? doc.slug,
+    content: doc.parsedFields.content ?? doc.content,
+    cover: doc.parsedFields.cover,
+    authordata: doc.parsedFields.authordata,
+    categoryname: doc.parsedFields.categoryname,
+    contentnew: doc.parsedFields.contentnew,
+    button: doc.parsedFields.button,
+    buttontitle: doc.parsedFields.buttontitle,
+    buttonsubtitle: doc.parsedFields.buttonsubtitle,
+    blogcategories: doc.parsedFields.blogcategories,
+    time: doc.parsedFields.time,
+    faqsection: doc.parsedFields.faqsection,
+    formsection: doc.parsedFields.formsection,
+    popularityname: doc.parsedFields.popularityname,
+    date: doc.parsedFields.date,
+    'defaultSeo.metaTitle': doc.parsedFields.defaultSeo?.metaTitle,
+    'defaultSeo.metaDescription': doc.parsedFields.defaultSeo?.metaDescription,
+    'defaultSeo.keywords': doc.parsedFields.defaultSeo?.keywords,
+    'defaultSeo.metaRobots': doc.parsedFields.defaultSeo?.metaRobots,
+    'defaultSeo.structuredData': doc.parsedFields.defaultSeo?.structuredData,
+    'defaultSeo.metaViewPort': doc.parsedFields.defaultSeo?.metaViewPort,
+    'defaultSeo.canonicalURL': doc.parsedFields.defaultSeo?.canonicalURL,
+    'defaultSeo.shareImage': doc.parsedFields.defaultSeo?.shareImage,
+  };
+  for (const [key, value] of Object.entries(values)) {
+    if (doc.fieldStates[key]?.status === 'missing' && value !== undefined && value !== null) {
+      doc.fieldStates[key] = { status: 'extracted', rawValue: String(value) };
+    }
+  }
+  return doc;
 }
 
 describe('Rule-Based and AI Mapping — Field Independence', () => {
@@ -49,7 +94,7 @@ describe('Rule-Based and AI Mapping — Field Independence', () => {
     expect(result.payload.Title).toBe('The Future of Artificial Intelligence');
     expect(result.payload.description).toBe('A concise description from the document.');
     expect(result.payload.slug).toBe('the-future-of-artificial-intelligence');
-    expect(result.payload.content).toBeNull();
+    expect(result.payload.content).toBeUndefined();
   });
 
   // Requirement 3:
@@ -200,13 +245,16 @@ describe('Rule-Based and AI Mapping — Field Independence', () => {
       parsedFields: {
         cover: null, // text like [Optional cover photo: ...] was parsed as placeholder
       },
+      fieldStates: {
+        cover: { status: 'unresolved', reason: 'Image requires manual selection.' },
+      },
       images: [], // no real binary image assets
     });
 
     const result = ruleBasedMapping(doc);
 
     expect(result.fields.cover).toBeNull();
-    expect(result.missingFields).toContain('coverImage (no images in document)');
+    expect(result.fieldStates.cover.status).toBe('unresolved');
     // In Strapi draft payload, coverImage is not sent as a string placeholder
     expect((result.payload as any).coverImage).toBeUndefined();
   });
@@ -239,7 +287,15 @@ describe('Rule-Based and AI Mapping — Field Independence', () => {
 
     // Conforms strictly to my-strapi/src/api/article/content-types/article/schema.json:
     // Attributes: Title, slug, description, content
-    expect(Object.keys(payload).sort()).toEqual(['Title', 'content', 'description', 'slug']);
+    expect(Object.keys(payload).sort()).toEqual([
+      'Authordata',
+      'Title',
+      'content',
+      'date',
+      'description',
+      'seo',
+      'slug',
+    ]);
     expect(payload.Title).toBe('Valid Strapi Article');
     expect(payload.slug).toBe('valid-strapi-article');
     expect(payload.description).toBe('Valid description');
@@ -286,11 +342,161 @@ describe('Rule-Based and AI Mapping — Field Independence', () => {
     expect(result.payload.slug).not.toBe('blog-details');
 
     // Verified: Content does NOT receive section headings or template headers
-    expect(result.payload.content).toBeNull();
+    expect(result.payload.content).toBeUndefined();
 
     // Verified: SEO is extracted into fields.defaultSeo
     expect(result.fields.defaultSeo?.metaTitle).toBe('How AI Is Transforming Digital Business | 12th Wonder');
     expect(result.fields.defaultSeo?.metaDescription).toContain('Learn how AI can help businesses');
+  });
+
+  it('maps all schema-supported sample values and reports unsupported/manual fields separately', () => {
+    const doc = createMockDoc({
+      title: 'How AI Is Transforming Digital Business',
+      description: 'Explore how businesses can use artificial intelligence to improve operations, personalize customer experiences, and make more informed decisions.',
+      slug: 'how-ai-is-transforming-digital-business',
+      content: 'Artificial intelligence is reshaping digital business with practical applications.',
+      parsedFields: {
+        title: 'How AI Is Transforming Digital Business',
+        description: 'Explore how businesses can use artificial intelligence to improve operations, personalize customer experiences, and make more informed decisions.',
+        slug: 'how-ai-is-transforming-digital-business',
+        content: 'Artificial intelligence is reshaping digital business with practical applications.',
+        date: '2026-10-26',
+        categoryname: 'Digital Transformation',
+        buttontitle: 'Explore Our Services',
+        buttonsubtitle: 'Discover practical digital solutions for your business.',
+        time: '5 min read',
+        popularityname: 'Trending',
+        authordata: null,
+        cover: null,
+        contentnew: null,
+        button: null,
+        blogcategories: null,
+        faqsection: null,
+        formsection: null,
+        defaultSeo: {
+          metaTitle: 'How AI Is Transforming Digital Business | 12th Wonder',
+          metaDescription: 'Learn how AI can help businesses streamline operations, personalize customer experiences, and support smarter decisions.',
+          keywords: [],
+          metaRobots: 'index, follow',
+          metaViewPort: 'width=device-width, initial-scale=1',
+          structuredData: null,
+          canonicalURL: null,
+          shareImage: null,
+        },
+      },
+      fieldStates: {
+        cover: { status: 'unresolved', reason: 'Image is manually selected in Strapi.', rawValue: 'Select cover image' },
+        authordata: { status: 'unresolved', reason: 'Author must be selected by a user.', rawValue: 'Select author' },
+        contentnew: { status: 'unresolved', reason: 'Structured Blocks value is unavailable.', rawValue: 'Populate rich content' },
+        button: { status: 'unresolved', reason: 'Button URL must be supplied.', rawValue: 'Add button URL' },
+        blogcategories: { status: 'unresolved', reason: 'Relation requires manual resolution.', rawValue: 'Select category' },
+        faqsection: { status: 'unresolved', reason: 'No target field.', rawValue: 'Add FAQs' },
+        formsection: { status: 'unresolved', reason: 'No target field.', rawValue: 'Select form' },
+        popularityname: { status: 'unresolved', reason: 'No target field.' },
+        'defaultSeo.keywords': { status: 'explicitly_empty' },
+        'defaultSeo.structuredData': { status: 'explicitly_empty' },
+        'defaultSeo.canonicalURL': { status: 'explicitly_empty' },
+        'defaultSeo.shareImage': { status: 'unresolved', reason: 'Image requires manual selection.', rawValue: 'Select share image' },
+      },
+    });
+
+    const result = ruleBasedMapping(doc);
+    expect(result.fields.title).toBe('How AI Is Transforming Digital Business');
+    expect(result.fields.date).toBe('2026-10-26');
+    expect(result.fields.categoryname).toBe('Digital Transformation');
+    expect(result.fields.popularityname).toBe('Trending');
+    expect(result.payload).toEqual({
+      Title: 'How AI Is Transforming Digital Business',
+      slug: 'how-ai-is-transforming-digital-business',
+      description: doc.description,
+      content: doc.content,
+      date: '2026-10-26',
+      categoryName: 'Digital Transformation',
+      buttontitle: 'Explore Our Services',
+      buttonsubtitle: 'Discover practical digital solutions for your business.',
+      time: '5 min read',
+      seo: {
+        metaTitle: 'How AI Is Transforming Digital Business | 12th Wonder',
+        metaDescription: 'Learn how AI can help businesses streamline operations, personalize customer experiences, and support smarter decisions.',
+        metaRobots: 'index, follow',
+        metaViewport: 'width=device-width, initial-scale=1',
+      },
+    });
+    expect(result.fieldStates['defaultSeo.keywords'].status).toBe('explicitly_empty');
+    expect(result.unmappedFields.map((field) => field.label)).toEqual(
+      expect.arrayContaining(['Cover', 'Authordata', 'Content New', 'Blog Categories', 'FAQ Section'])
+    );
+    expect(Object.keys(result.fields).length).toBeGreaterThan(4);
+    expect(Object.keys(result.payload)).not.toContain('faqsection');
+    expect(Object.keys(result.payload)).not.toContain('blogcategories');
+  });
+
+  it('defines an explicit mapping entry for every requested semantic field', () => {
+    expect(new Set(DOCUMENT_FIELD_MAPPINGS.map((entry) => entry.internalField)).size)
+      .toBe(DOCUMENT_FIELD_KEYS.length);
+    expect(DOCUMENT_FIELD_MAPPINGS.find((entry) => entry.internalField === 'blogcategories')?.automatic).toBe(false);
+    expect(DOCUMENT_FIELD_MAPPINGS.find((entry) => entry.internalField === 'cover')?.strapiField).toBe('coverImage');
+  });
+
+  it('falls back safely when AI field types are invalid', async () => {
+    const doc = createMockDoc();
+    const result = await mapDocumentToArticle(
+      doc,
+      'test-key',
+      'mock-model',
+      async () => '{"fields":{"title":42}}'
+    );
+
+    expect(result.fields.title).toBe('Default Title');
+    expect(result.payload.Title).toBe('Default Title');
+    expect(result.warnings.some((warning) => warning.includes('failed validation'))).toBe(true);
+  });
+
+  it('falls back safely when the AI response is not valid JSON', async () => {
+    const result = await mapDocumentToArticle(
+      createMockDoc(),
+      'test-key',
+      'mock-model',
+      async () => 'not JSON'
+    );
+
+    expect(result.payload.Title).toBe('Default Title');
+    expect(result.warnings.some((warning) => warning.includes('malformed JSON'))).toBe(true);
+  });
+
+  it('reports AI provider failures and returns deterministic extracted values', async () => {
+    const doc = createMockDoc();
+    const result = await mapDocumentToArticle(
+      doc,
+      'test-key',
+      'mock-model',
+      async () => {
+        throw new Error('simulated provider outage');
+      }
+    );
+
+    expect(result.payload.Title).toBe('Default Title');
+    expect(result.warnings.some((warning) => warning.includes('simulated provider outage'))).toBe(true);
+  });
+
+  it('uses valid AI-extracted values only for fields still missing from deterministic parsing', async () => {
+    const doc = createMockDoc({
+      title: null,
+      description: null,
+      content: null,
+      rawText: 'Title field appears in an unusual location.',
+    });
+    const result = await mapDocumentToArticle(
+      doc,
+      'test-key',
+      'mock-model',
+      async () => JSON.stringify({ fields: { title: 'AI extracted title' } })
+    );
+
+    expect(result.fields.title).toBe('AI extracted title');
+    expect(result.payload.Title).toBe('AI extracted title');
+    expect(result.payload.slug).toBe('ai-extracted-title');
+    expect(result.fieldStates.title.status).toBe('extracted');
   });
 });
 
@@ -375,5 +581,37 @@ describe('Strapi Client and Duplicate Prevention', () => {
     expect(diffs.length).toBeGreaterThan(0);
     expect(diffs.some((d) => d.includes('slug'))).toBe(true);
     expect(diffs.some((d) => d.includes('content'))).toBe(true);
+  });
+
+  it('compares populated Strapi component payloads by expected fields, not object identity', () => {
+    const mismatches = diffPayload(
+      {
+        seo: { metaTitle: 'SEO title', keywords: 'AI, business' },
+        Authordata: { authorName: 'Jane Doe' },
+      },
+      {
+        seo: { id: 2, metaTitle: 'SEO title', keywords: 'AI, business', metaRobots: null },
+        Authordata: { id: 4, authorName: 'Jane Doe', title: null },
+      }
+    );
+    expect(mismatches).toHaveLength(0);
+  });
+
+  it('populates all component fields used by the expanded payload when verifying a draft', async () => {
+    const client = new StrapiClient('http://localhost:1337', 'mock-token');
+    let requestUrl = '';
+    vi.spyOn(globalThis, 'fetch').mockImplementationOnce(async (url) => {
+      requestUrl = String(url);
+      return {
+        ok: true,
+        json: async () => ({ data: { documentId: 'doc-1', seo: {}, Authordata: {}, button: {} } }),
+      } as any;
+    });
+
+    await client.getByDocumentId('doc-1');
+    expect(requestUrl).toContain('status=draft');
+    expect(requestUrl).toContain('populate%5Bseo%5D=true');
+    expect(requestUrl).toContain('populate%5BAuthordata%5D=true');
+    expect(requestUrl).toContain('populate%5Bbutton%5D=true');
   });
 });

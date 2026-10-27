@@ -60,6 +60,14 @@ describe('validateArticlePayload', () => {
     expect(result.success).toBe(false);
   });
 
+  it('rejects impossible calendar dates', () => {
+    expect(validateArticlePayload({ date: '2026-02-31' }).success).toBe(false);
+  });
+
+  it('rejects unsupported CMS payload fields', () => {
+    expect(validateArticlePayload({ Title: 'Safe', faqsection: 'not in the schema' }).success).toBe(false);
+  });
+
   it('rejects missing required field when requiredFields option is provided', () => {
     const result = validateArticlePayload(
       { description: 'A description', content: null },
@@ -119,14 +127,14 @@ describe('buildStrapiPayload', () => {
       description: 'An in-depth look at renewables.',
       slug: 'the-future-of-renewable-energy',
       content: '## Solar Energy\n\nSolar is booming.',
+      Authordata: { authorName: 'John Doe' },
+      date: '2026-10-26',
     });
     // Unmapped document fields are NOT included in the Strapi payload
-    expect((payload as any).authordata).toBeUndefined();
     expect((payload as any).faqsection).toBeUndefined();
-    expect((payload as any).date).toBeUndefined();
   });
 
-  it('keeps content as null when document has no body content', () => {
+  it('omits missing content rather than converting it to a destructive null', () => {
     const payload = buildStrapiPayload({
       title: 'Title Only',
       description: 'Summary only',
@@ -134,14 +142,73 @@ describe('buildStrapiPayload', () => {
       content: null,
     });
 
-    expect(payload.content).toBeNull();
+    expect(payload.content).toBeUndefined();
     expect(payload.Title).toBe('Title Only');
     expect(payload.description).toBe('Summary only');
     expect(payload.slug).toBe('title-only');
   });
+
+  it('maps supported SEO and button fields to verified component structures', () => {
+    const payload = buildStrapiPayload({
+      defaultSeo: {
+        metaTitle: 'SEO title',
+        metaDescription: 'SEO description',
+        keywords: ['ai', 'business'],
+        metaRobots: 'index, follow',
+        structuredData: '{"@type":"Article"}',
+        metaViewPort: 'width=device-width, initial-scale=1',
+        canonicalURL: 'https://example.test/article',
+      },
+      button: 'https://example.test/start',
+      buttontitle: 'Explore',
+      buttonsubtitle: 'Learn more',
+      categoryname: 'Digital Transformation',
+      time: '5 min read',
+    });
+
+    expect(payload.seo).toEqual({
+      metaTitle: 'SEO title',
+      metaDescription: 'SEO description',
+      keywords: 'ai, business',
+      metaRobots: 'index, follow',
+      structuredData: '{"@type":"Article"}',
+      metaViewport: 'width=device-width, initial-scale=1',
+      canonicalURL: 'https://example.test/article',
+    });
+    expect(payload.button).toEqual({ link: 'https://example.test/start' });
+    expect(payload.categoryName).toBe('Digital Transformation');
+    expect(payload.time).toBe('5 min read');
+  });
+
+  it('omits empty and unresolved values from the CMS payload', () => {
+    const payload = buildStrapiPayload({
+      title: 'Existing article',
+      description: null,
+      content: null,
+      date: 'not a date',
+      authordata: 'Add the correct author relation',
+      cover: null,
+      defaultSeo: { keywords: [] },
+    }, {
+      title: { status: 'extracted' },
+      description: { status: 'explicitly_empty' },
+      content: { status: 'missing' },
+      date: { status: 'invalid' },
+      authordata: { status: 'unresolved' },
+      cover: { status: 'unresolved' },
+      'defaultSeo.keywords': { status: 'explicitly_empty' },
+    });
+
+    expect(payload).toEqual({ Title: 'Existing article', slug: 'existing-article' });
+  });
 });
 
 describe('DocumentFieldsSchema', () => {
+  it('rejects incorrect field data types', () => {
+    expect(DocumentFieldsSchema.safeParse({ title: 42 }).success).toBe(false);
+    expect(DocumentFieldsSchema.safeParse({ defaultSeo: { keywords: 'not-an-array' } }).success).toBe(false);
+  });
+
   it('validates complete independent fields mapping contract', () => {
     const data = {
       title: 'Test Article',

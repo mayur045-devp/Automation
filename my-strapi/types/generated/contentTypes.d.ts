@@ -491,11 +491,18 @@ export interface ApiArticleArticle extends Struct.CollectionTypeSchema {
     draftAndPublish: true;
   };
   attributes: {
+    Authordata: Schema.Attribute.Component<'component.author-data', false>;
+    button: Schema.Attribute.Component<'component.button', false>;
+    buttonsubtitle: Schema.Attribute.String;
+    buttontitle: Schema.Attribute.String;
+    categoryName: Schema.Attribute.String;
     content: Schema.Attribute.RichText;
+    contentNew: Schema.Attribute.Component<'component.content-new', false>;
     coverImage: Schema.Attribute.Media<'images'>;
     createdAt: Schema.Attribute.DateTime;
     createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;
+    date: Schema.Attribute.Date;
     description: Schema.Attribute.Text;
     locale: Schema.Attribute.String & Schema.Attribute.Private;
     localizations: Schema.Attribute.Relation<
@@ -503,8 +510,16 @@ export interface ApiArticleArticle extends Struct.CollectionTypeSchema {
       'api::article.article'
     > &
       Schema.Attribute.Private;
+    polldata: Schema.Attribute.Component<'component.polldata', false>;
     publishedAt: Schema.Attribute.DateTime;
+    Quizedata: Schema.Attribute.Component<'component.quizedata', false>;
+    seo: Schema.Attribute.Component<'seo.seo', false>;
     slug: Schema.Attribute.UID<'Title'>;
+    time: Schema.Attribute.String;
+    tital_blog_category: Schema.Attribute.Relation<
+      'oneToOne',
+      'api::article.article'
+    >;
     Title: Schema.Attribute.String;
     updatedAt: Schema.Attribute.DateTime;
     updatedBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &

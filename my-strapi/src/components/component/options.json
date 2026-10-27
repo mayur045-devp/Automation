@@ -1,0 +1,19 @@
+{
+  "collectionName": "components_component_options",
+  "info": {
+    "displayName": "options"
+  },
+  "options": {},
+  "attributes": {
+    "label": {
+      "type": "string"
+    },
+    "votes": {
+      "type": "integer"
+    },
+    "isCorrect": {
+      "type": "boolean"
+    }
+  },
+  "config": {}
+}

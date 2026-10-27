@@ -1,0 +1,16 @@
+{
+  "collectionName": "components_component_content_news",
+  "info": {
+    "displayName": "contentNew"
+  },
+  "options": {},
+  "attributes": {
+    "title": {
+      "type": "string"
+    },
+    "content": {
+      "type": "blocks"
+    }
+  },
+  "config": {}
+}

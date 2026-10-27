@@ -1,0 +1,24 @@
+{
+  "collectionName": "components_component_quizedata",
+  "info": {
+    "displayName": "Quizedata"
+  },
+  "options": {},
+  "attributes": {
+    "question": {
+      "type": "string"
+    },
+    "position": {
+      "type": "integer"
+    },
+    "isActive": {
+      "type": "boolean"
+    },
+    "options": {
+      "type": "component",
+      "component": "component.options",
+      "repeatable": true
+    }
+  },
+  "config": {}
+}

@@ -1,6 +1,7 @@
 import mammoth from 'mammoth';
 import path from 'path';
-import type { DocumentFields } from './schema';
+import { DOCUMENT_FIELD_KEYS, DOCUMENT_FIELD_MAPPINGS, slugify } from './schema';
+import type { DocumentFields, DocumentFieldKey, FieldState, FieldStates } from './schema';
 
 export interface ExtractedImage {
   index: number;
@@ -28,9 +29,9 @@ export interface ExtractedDocument {
     filename: string;
   };
   parsedFields: Partial<DocumentFields>;
+  fieldStates: FieldStates;
+  unmappedFields: Array<{ label: string; value: string }>;
 }
-
-let imageCounter = 0;
 
 /**
  * Check if text represents an image placeholder or empty instruction rather than a real image asset.
@@ -97,6 +98,11 @@ export function normalizeValue(val: string): string | null {
   if (
     lower.startsWith('leave empty') ||
     lower === '[leave empty]' ||
+    lower === 'empty' ||
+    lower === 'empty.' ||
+    lower === 'no provided value' ||
+    lower === 'no provided value.' ||
+    lower === 'not provided' ||
     lower === 'n/a' ||
     lower === 'none' ||
     lower === '(none)'
@@ -111,11 +117,176 @@ export function normalizeValue(val: string): string | null {
  */
 export function parseLabeledField(text: string): { label: string; value: string } | null {
   const trimmed = text.trim();
-  const match = trimmed.match(/^([A-Za-z0-9\s\.\[\]]+?)\s*[:—–-]\s*(.+)$/);
+  const match = trimmed.match(/^([A-Za-z0-9\s\.\[\]]+?)\s*([:—–-])\s*(.*)$/);
   if (!match) return null;
   const label = normalizeKey(match[1]);
-  const value = match[2].trim();
+  if (match[2] !== ':' && !FIELD_ALIASES[label]) return null;
+  const value = match[3].trim();
   return { label, value };
+}
+
+const FIELD_ALIASES: Record<string, DocumentFieldKey> = Object.fromEntries(
+  DOCUMENT_FIELD_MAPPINGS.flatMap(({ label, aliases = [], internalField }) =>
+    [label, ...aliases].map((alias) => [normalizeKey(alias), internalField])
+  )
+);
+
+function initialFieldStates(): FieldStates {
+  return Object.fromEntries(
+    DOCUMENT_FIELD_KEYS.map((key) => [key, { status: 'missing' as const }])
+  );
+}
+
+function classifyFieldValue(
+  key: DocumentFieldKey,
+  rawValue: string
+): { state: FieldState; value: string | null } {
+  const value = rawValue.trim();
+  const imageMatch = value.match(/^\[IMAGE_(\d+)\]$/i);
+  if (key === 'cover' && imageMatch) {
+    return {
+      state: {
+        status: 'extracted',
+        reason: 'Image is explicitly placed in the Cover field.',
+        rawValue: value,
+        imageIndex: Number(imageMatch[1]),
+      },
+      value: null,
+    };
+  }
+
+  if (!value) {
+    return { state: { status: 'explicitly_empty', rawValue }, value: null };
+  }
+
+  const lower = value.toLowerCase();
+  if (/^(empty|no provided value|not provided|n\/a|none|\(none\)|\[leave empty\])\.?$/.test(lower)) {
+    return { state: { status: 'explicitly_empty', rawValue }, value: null };
+  }
+  if (
+    lower.startsWith('leave empty') ||
+    lower.startsWith('select ') ||
+    lower.startsWith('add ') ||
+    lower.startsWith('connect ') ||
+    lower.startsWith('choose ') ||
+    lower.startsWith('[optional') ||
+    lower.startsWith('[cover') ||
+    lower.startsWith('[image')
+  ) {
+    return {
+      state: { status: 'unresolved', reason: 'Template instruction or placeholder, not a field value.', rawValue },
+      value: null,
+    };
+  }
+
+  if (key === 'cover' || key === 'defaultSeo.shareImage') {
+    return {
+      state: { status: 'unresolved', reason: 'Media fields require an explicitly referenced embedded image or manual selection.', rawValue },
+      value: null,
+    };
+  }
+  if (key === 'blogcategories') {
+    return {
+      state: { status: 'unresolved', reason: 'Category text cannot safely resolve the current Article relation.', rawValue },
+      value,
+    };
+  }
+  if (key === 'contentnew') {
+    return {
+      state: { status: 'requires_review', reason: 'The target component expects structured Blocks content.', rawValue },
+      value,
+    };
+  }
+  if (key === 'faqsection' || key === 'formsection' || key === 'popularityname') {
+    return {
+      state: { status: 'unresolved', reason: 'No matching attribute exists in the current Strapi Article schema.', rawValue },
+      value,
+    };
+  }
+  if (key === 'date' && !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return { state: { status: 'invalid', reason: 'Expected a date in YYYY-MM-DD format.', rawValue }, value };
+  }
+  if (key === 'date') {
+    const date = new Date(`${value}T00:00:00.000Z`);
+    if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value) {
+      return { state: { status: 'invalid', reason: 'Date is not a valid calendar date.', rawValue }, value };
+    }
+  }
+  if (key === 'slug' && !slugify(value)) {
+    return { state: { status: 'invalid', reason: 'Slug contains no usable URL characters.', rawValue }, value };
+  }
+  if (key === 'button' && !(/^https?:\/\/\S+$/i.test(value) || /^\/[^/\s][^\s]*$/.test(value) || /^#[^\s]+$/.test(value))) {
+    return { state: { status: 'requires_review', reason: 'Button value is not a verified URL/path for button.link.', rawValue }, value };
+  }
+
+  return { state: { status: 'extracted', rawValue }, value };
+}
+
+function assignField(
+  fields: Partial<DocumentFields>,
+  states: FieldStates,
+  label: string,
+  rawValue: string
+): boolean {
+  const key = FIELD_ALIASES[normalizeKey(label)];
+  if (!key) return false;
+
+  const classified = classifyFieldValue(key, rawValue);
+  const existing = states[key];
+  if (
+    existing &&
+    existing.status !== 'missing' &&
+    existing.rawValue !== undefined &&
+    existing.rawValue !== rawValue.trim()
+  ) {
+    states[key] = {
+      status: 'requires_review',
+      reason: `Conflicting duplicate values for "${label}".`,
+      rawValue: `${existing.rawValue}\n${rawValue.trim()}`,
+    };
+    return true;
+  }
+  states[key] = classified.state;
+
+  const value = classified.value;
+  if (key.startsWith('defaultSeo.')) {
+    const seoKey = key.slice('defaultSeo.'.length) as keyof NonNullable<DocumentFields['defaultSeo']>;
+    const seo = fields.defaultSeo ?? {};
+    if (seoKey === 'keywords') {
+      seo.keywords = value
+        ? value.split(/[,;]\s*/).map((part) => part.trim()).filter(Boolean)
+        : [];
+    } else {
+      seo[seoKey] = value;
+    }
+    fields.defaultSeo = seo;
+    return true;
+  }
+
+  switch (key) {
+    case 'title': fields.title = value; break;
+    case 'description': fields.description = value; break;
+    case 'slug': fields.slug = value; break;
+    case 'cover': fields.cover = value; break;
+    case 'content': fields.content = value; break;
+    case 'date': fields.date = value; break;
+    case 'authordata': fields.authordata = value; break;
+    case 'categoryname': fields.categoryname = value; break;
+    case 'contentnew': fields.contentnew = value; break;
+    case 'button': fields.button = value; break;
+    case 'buttontitle': fields.buttontitle = value; break;
+    case 'buttonsubtitle': fields.buttonsubtitle = value; break;
+    case 'blogcategories':
+      fields.blogcategories = value && value.includes(',')
+        ? value.split(',').map((part) => part.trim()).filter(Boolean)
+        : value;
+      break;
+    case 'time': fields.time = value; break;
+    case 'faqsection': fields.faqsection = value; break;
+    case 'formsection': fields.formsection = value; break;
+    case 'popularityname': fields.popularityname = value; break;
+  }
+  return true;
 }
 
 /**
@@ -164,7 +335,7 @@ export async function extractDocx(
   buffer: Buffer,
   filename: string
 ): Promise<ExtractedDocument> {
-  imageCounter = 0;
+  let imageCounter = 0;
   const images: ExtractedImage[] = [];
 
   const result = await mammoth.convertToHtml(
@@ -189,131 +360,17 @@ export async function extractDocx(
 
   const html = result.value;
 
-  const parsedFields: Partial<DocumentFields> = {
-    defaultSeo: {
-      metaTitle: null,
-      metaDescription: null,
-      keywords: [],
-      metaRobots: null,
-      structuredData: null,
-      metaViewPort: null,
-      canonicalURL: null,
-      shareImage: null,
-    },
-  };
+  const parsedFields: Partial<DocumentFields> = {};
+  const fieldStates = initialFieldStates();
+  const unmappedFields: Array<{ label: string; value: string }> = [];
 
   // Step 1: Parse table key-value pairs (highest fidelity for structured templates)
   const tablePairs = parseTables(html);
   for (const { key, value } of tablePairs) {
-    const normK = normalizeKey(key);
-    const normV = normalizeValue(value);
-
-    switch (normK) {
-      case 'title':
-        if (normV) parsedFields.title = normV;
-        break;
-      case 'description':
-      case 'summary':
-      case 'abstract':
-        if (normV) parsedFields.description = normV;
-        break;
-      case 'slug':
-        if (normV) parsedFields.slug = normV;
-        break;
-      case 'cover':
-      case 'coverimage':
-        parsedFields.cover = null; // placeholders become null
-        break;
-      case 'metatitle':
-      case 'seotitle':
-        if (parsedFields.defaultSeo && normV) parsedFields.defaultSeo.metaTitle = normV;
-        break;
-      case 'metadescription':
-      case 'seodescription':
-        if (parsedFields.defaultSeo && normV) parsedFields.defaultSeo.metaDescription = normV;
-        break;
-      case 'keywords':
-        if (parsedFields.defaultSeo) {
-          parsedFields.defaultSeo.keywords = normV
-            ? normV.split(',').map((s) => s.trim()).filter(Boolean)
-            : [];
-        }
-        break;
-      case 'metarobots':
-      case 'robots':
-        if (parsedFields.defaultSeo && normV) parsedFields.defaultSeo.metaRobots = normV;
-        break;
-      case 'structureddata':
-        if (parsedFields.defaultSeo && normV) parsedFields.defaultSeo.structuredData = normV;
-        break;
-      case 'metaviewport':
-      case 'viewport':
-        if (parsedFields.defaultSeo && normV) parsedFields.defaultSeo.metaViewPort = normV;
-        break;
-      case 'canonicalurl':
-      case 'canonical':
-        if (parsedFields.defaultSeo && normV) parsedFields.defaultSeo.canonicalURL = normV;
-        break;
-      case 'shareimage':
-        if (parsedFields.defaultSeo && normV) parsedFields.defaultSeo.shareImage = normV;
-        break;
-      case 'content':
-      case 'maincontent':
-        parsedFields.content = normV;
-        break;
-      case 'contentnew':
-        parsedFields.contentnew = normV;
-        break;
-      case 'author':
-      case 'authordata':
-      case 'by':
-        parsedFields.authordata = normV;
-        break;
-      case 'date':
-      case 'publisheddate':
-        parsedFields.date = normV;
-        break;
-      case 'category':
-      case 'categoryname':
-        parsedFields.categoryname = normV;
-        break;
-      case 'categories':
-      case 'blogcategories':
-        parsedFields.blogcategories = normV
-          ? normV.includes(',')
-            ? normV.split(',').map((s) => s.trim()).filter(Boolean)
-            : normV
-          : null;
-        break;
-      case 'button':
-      case 'buttontext':
-        parsedFields.button = normV;
-        break;
-      case 'buttontitle':
-        parsedFields.buttontitle = normV;
-        break;
-      case 'buttonsubtitle':
-        parsedFields.buttonsubtitle = normV;
-        break;
-      case 'time':
-      case 'readtime':
-        parsedFields.time = normV;
-        break;
-      case 'faq':
-      case 'faqsection':
-        parsedFields.faqsection = normV;
-        break;
-      case 'form':
-      case 'formsection':
-        parsedFields.formsection = normV;
-        break;
-      case 'popularity':
-      case 'popularityname':
-        parsedFields.popularityname = normV;
-        break;
+    if (!assignField(parsedFields, fieldStates, key, value) && value.trim()) {
+      unmappedFields.push({ label: key, value });
     }
   }
-
   // Step 2: Strip <table>...</table> from HTML so table contents don't pollute paragraph stream
   const htmlWithoutTables = html.replace(/<table[^>]*>.*?<\/table>/gis, ' ');
 
@@ -373,6 +430,7 @@ export async function extractDocx(
   const buttonItems: string[] = [];
 
   for (let i = 0; i < elements.length; i++) {
+    if (usedElementIndices.has(i)) continue;
     const elem = elements[i];
     const elemText = elem.type === 'list' ? elem.items.join(' ') : elem.text;
 
@@ -409,6 +467,28 @@ export async function extractDocx(
       }
     }
 
+    if (elem.type === 'paragraph') {
+      const labeled = parseLabeledField(elem.text);
+      if (labeled && assignField(parsedFields, fieldStates, labeled.label, labeled.value)) {
+        usedElementIndices.add(i);
+        continue;
+      }
+    }
+
+    if ((elem.type === 'heading' || elem.type === 'paragraph') && FIELD_ALIASES[normalizeKey(elemText)]) {
+      const next = elements[i + 1];
+      if (next && next.type !== 'heading') {
+        const value = next.type === 'list' ? next.items.join('\n') : next.text;
+        assignField(parsedFields, fieldStates, elemText, value);
+        usedElementIndices.add(i);
+        usedElementIndices.add(i + 1);
+      } else {
+        assignField(parsedFields, fieldStates, elemText, '');
+        usedElementIndices.add(i);
+      }
+      continue;
+    }
+
     if (currentMetadataSection) {
       usedElementIndices.add(i);
       const textContent = elem.type === 'list' ? elem.items.join('\n') : elem.text;
@@ -423,130 +503,37 @@ export async function extractDocx(
     // Check for image placeholder
     if (elem.type === 'paragraph' && isImagePlaceholder(elem.text)) {
       usedElementIndices.add(i);
-      parsedFields.cover = null;
+      assignField(parsedFields, fieldStates, 'cover', elem.text);
       continue;
     }
 
-    // Check for labeled lines
     if (elem.type === 'paragraph') {
       const labeled = parseLabeledField(elem.text);
-      if (labeled) {
-        const { label, value } = labeled;
-        const normV = normalizeValue(value);
-        let matched = true;
-
-        switch (label) {
-          case 'title':
-            if (normV && !parsedFields.title) parsedFields.title = normV;
-            break;
-          case 'description':
-          case 'summary':
-          case 'abstract':
-            if (normV && !parsedFields.description) parsedFields.description = normV;
-            break;
-          case 'slug':
-            if (normV && !parsedFields.slug) parsedFields.slug = normV;
-            break;
-          case 'author':
-          case 'authordata':
-          case 'by':
-            if (normV) parsedFields.authordata = normV;
-            break;
-          case 'date':
-          case 'publisheddate':
-          case 'published':
-            if (normV) parsedFields.date = normV;
-            break;
-          case 'category':
-          case 'categoryname':
-            if (normV) parsedFields.categoryname = normV;
-            break;
-          case 'categories':
-          case 'blogcategories':
-            if (normV) {
-              parsedFields.blogcategories = normV.includes(',')
-                ? normV.split(',').map((s) => s.trim()).filter(Boolean)
-                : normV;
-            }
-            break;
-          case 'seotitle':
-          case 'metatitle':
-            if (parsedFields.defaultSeo && normV) parsedFields.defaultSeo.metaTitle = normV;
-            break;
-          case 'seodescription':
-          case 'metadescription':
-            if (parsedFields.defaultSeo && normV) parsedFields.defaultSeo.metaDescription = normV;
-            break;
-          case 'keywords':
-            if (parsedFields.defaultSeo && normV) {
-              parsedFields.defaultSeo.keywords = normV
-                .split(',')
-                .map((s) => s.trim())
-                .filter(Boolean);
-            }
-            break;
-          case 'robots':
-          case 'metarobots':
-            if (parsedFields.defaultSeo && normV) parsedFields.defaultSeo.metaRobots = normV;
-            break;
-          case 'canonicalurl':
-          case 'canonical':
-            if (parsedFields.defaultSeo && normV) parsedFields.defaultSeo.canonicalURL = normV;
-            break;
-          case 'button':
-          case 'buttontext':
-            if (normV) parsedFields.button = normV;
-            break;
-          case 'buttontitle':
-            if (normV) parsedFields.buttontitle = normV;
-            break;
-          case 'buttonsubtitle':
-            if (normV) parsedFields.buttonsubtitle = normV;
-            break;
-          case 'faq':
-          case 'frequentlyaskedquestions':
-            if (normV) faqItems.push(normV);
-            break;
-          case 'form':
-          case 'formsection':
-            if (normV) formItems.push(normV);
-            break;
-          case 'time':
-          case 'readtime':
-            if (normV) parsedFields.time = normV;
-            break;
-          case 'popularity':
-          case 'popularityname':
-            if (normV) parsedFields.popularityname = normV;
-            break;
-          case 'contentnew':
-            if (normV) parsedFields.contentnew = normV;
-            break;
-          default:
-            matched = false;
-        }
-
-        if (matched) {
-          usedElementIndices.add(i);
-        }
-      }
+      if (labeled && labeled.value) unmappedFields.push(labeled);
     }
   }
 
-  // Populate accumulated sections into parsedFields if not already set by tables
-  if (faqItems.length > 0 && !parsedFields.faqsection) parsedFields.faqsection = faqItems.join('\n\n');
-  if (formItems.length > 0 && !parsedFields.formsection) parsedFields.formsection = formItems.join('\n\n');
-  if (authorItems.length > 0 && !parsedFields.authordata) parsedFields.authordata = authorItems.join('\n');
-  if (buttonItems.length > 0 && !parsedFields.button) parsedFields.button = buttonItems.join('\n');
-  if (seoItems.length > 0 && parsedFields.defaultSeo && !parsedFields.defaultSeo.metaDescription) {
-    parsedFields.defaultSeo.metaDescription = seoItems.join(' ');
+  if (faqItems.length && fieldStates.faqsection.status === 'missing') {
+    assignField(parsedFields, fieldStates, 'faqsection', faqItems.join('\n\n'));
+  }
+  if (formItems.length && fieldStates.formsection.status === 'missing') {
+    assignField(parsedFields, fieldStates, 'formsection', formItems.join('\n\n'));
+  }
+  if (authorItems.length && fieldStates.authordata.status === 'missing') {
+    assignField(parsedFields, fieldStates, 'authordata', authorItems.join('\n'));
+  }
+  if (buttonItems.length && fieldStates.button.status === 'missing') {
+    assignField(parsedFields, fieldStates, 'button', buttonItems.join('\n'));
+  }
+  if (seoItems.length) {
+    unmappedFields.push({ label: 'SEO section', value: seoItems.join('\n\n') });
   }
 
   // Step 5: Resolve Title (if not already found in table or label)
   let title = parsedFields.title ?? null;
   let titleElemIndex = -1;
 
-  if (!title) {
+  if (!title && fieldStates.title.status === 'missing') {
     for (let i = 0; i < elements.length; i++) {
       const elem = elements[i];
       if (
@@ -562,7 +549,7 @@ export async function extractDocx(
       }
     }
 
-    if (!title) {
+    if (!title && fieldStates.title.status === 'missing') {
       for (let i = 0; i < elements.length; i++) {
         const elem = elements[i];
         if (
@@ -578,7 +565,7 @@ export async function extractDocx(
       }
     }
 
-    if (!title) {
+    if (!title && fieldStates.title.status === 'missing') {
       for (let i = 0; i < elements.length; i++) {
         const elem = elements[i];
         if (
@@ -595,10 +582,13 @@ export async function extractDocx(
     }
   }
   parsedFields.title = title;
+  if (title && fieldStates.title.status === 'missing') {
+    fieldStates.title = { status: 'extracted', reason: 'Inferred from the document heading.', rawValue: title };
+  }
 
   // Step 6: Resolve Description (if not already found in table or label)
   let description = parsedFields.description ?? null;
-  if (!description) {
+  if (!description && fieldStates.description.status === 'missing') {
     for (let i = 0; i < elements.length; i++) {
       if (i <= titleElemIndex) continue;
       const elem = elements[i];
@@ -614,13 +604,16 @@ export async function extractDocx(
     }
   }
   parsedFields.description = description;
+  if (description && fieldStates.description.status === 'missing') {
+    fieldStates.description = { status: 'extracted', reason: 'Inferred from the first remaining paragraph.', rawValue: description };
+  }
 
   // Step 7: Resolve Content (main body ONLY)
   // If content was explicitly set via table, prioritize that
   let content = parsedFields.content ?? null;
 
   // Otherwise, collect remaining non-metadata, non-template elements
-  if (!content) {
+  if (!content && fieldStates.content.status === 'missing') {
     const contentParts: string[] = [];
     for (let i = 0; i < elements.length; i++) {
       if (usedElementIndices.has(i)) continue;
@@ -640,6 +633,18 @@ export async function extractDocx(
     content = contentParts.length > 0 ? contentParts.join('\n\n') : null;
   }
   parsedFields.content = content;
+  if (content && fieldStates.content.status === 'missing') {
+    fieldStates.content = { status: 'extracted', reason: 'Preserved from remaining document body content.', rawValue: content };
+  }
+
+  const referencedCoverIndex = fieldStates.cover.imageIndex;
+  if (referencedCoverIndex !== undefined && !images.some((image) => image.index === referencedCoverIndex)) {
+    fieldStates.cover = {
+      status: 'invalid',
+      reason: `Cover references embedded image ${referencedCoverIndex}, which was not extracted.`,
+      rawValue: fieldStates.cover.rawValue,
+    };
+  }
 
   const rawText = stripHtml(html);
   const wordCount = rawText.split(/\s+/).filter(Boolean).length;
@@ -661,11 +666,28 @@ export async function extractDocx(
       filename: path.basename(filename),
     },
     parsedFields,
+    fieldStates,
+    unmappedFields,
   };
 }
 
 function stripHtml(html: string): string {
-  return html
+  const withLinks = html.replace(
+    /<a\b[^>]*href=["']([^"']+)["'][^>]*>(.*?)<\/a>/gis,
+    (_match, href: string, label: string) => {
+      const linkText = stripHtml(label);
+      const linkTarget = decodeHtmlEntities(href);
+      return /^(https?:\/\/|mailto:|\/|#)/i.test(linkTarget)
+        ? `[${linkText}](${linkTarget})`
+        : linkText;
+    }
+  );
+  return withLinks
+    .replace(/<(strong|b)\b[^>]*>/gi, '**')
+    .replace(/<\/(strong|b)>/gi, '**')
+    .replace(/<(em|i)\b[^>]*>/gi, '*')
+    .replace(/<\/(em|i)>/gi, '*')
+    .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<[^>]+>/g, ' ')
     .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
@@ -675,4 +697,13 @@ function stripHtml(html: string): string {
     .replace(/&nbsp;/g, ' ')
     .replace(/\s{2,}/g, ' ')
     .trim();
+}
+
+function decodeHtmlEntities(value: string): string {
+  return value
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
 }

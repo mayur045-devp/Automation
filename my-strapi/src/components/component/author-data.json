@@ -1,0 +1,29 @@
+{
+  "collectionName": "components_component_author_data",
+  "info": {
+    "displayName": "AuthorData"
+  },
+  "options": {},
+  "attributes": {
+    "title": {
+      "type": "string"
+    },
+    "authorName": {
+      "type": "string"
+    },
+    "image": {
+      "type": "media",
+      "multiple": true,
+      "allowedTypes": [
+        "images",
+        "files",
+        "videos",
+        "audios"
+      ]
+    },
+    "Authordesignation": {
+      "type": "string"
+    }
+  },
+  "config": {}
+}

@@ -1,19 +1,19 @@
 import { z } from 'zod';
 
 /**
- * SEO Component Schema — represents defaultSeo component in Strapi / document metadata.
+ * Document SEO extraction shape; it maps to the Strapi `seo` component.
  * Contains: metaTitle, metaDescription, keywords, metaRobots, structuredData, metaViewPort, canonicalURL, shareImage.
  */
 export const SeoComponentSchema = z.object({
   metaTitle: z.string().nullable().optional(),
   metaDescription: z.string().nullable().optional(),
-  keywords: z.array(z.string()).default([]),
+  keywords: z.array(z.string()).optional(),
   metaRobots: z.string().nullable().optional(),
   structuredData: z.string().nullable().optional(),
   metaViewPort: z.string().nullable().optional(),
   canonicalURL: z.string().nullable().optional(),
   shareImage: z.string().nullable().optional(),
-});
+}).strict();
 
 export type SeoComponent = z.infer<typeof SeoComponentSchema>;
 
@@ -48,18 +48,126 @@ export const DocumentFieldsSchema = z.object({
   faqsection: z.union([z.array(FaqItemSchema), z.array(z.any()), z.string()]).nullable().optional(),
   formsection: z.union([z.record(z.any()), z.string()]).nullable().optional(),
   popularityname: z.string().nullable().optional(),
-});
+}).strict();
 
 export type DocumentFields = z.infer<typeof DocumentFieldsSchema>;
 
+export const DOCUMENT_FIELD_KEYS = [
+  'title', 'description', 'slug', 'cover',
+  'defaultSeo.metaTitle', 'defaultSeo.metaDescription', 'defaultSeo.keywords',
+  'defaultSeo.metaRobots', 'defaultSeo.structuredData', 'defaultSeo.metaViewPort',
+  'defaultSeo.canonicalURL', 'defaultSeo.shareImage', 'content', 'date',
+  'authordata', 'categoryname', 'contentnew', 'button', 'buttontitle',
+  'buttonsubtitle', 'blogcategories', 'time', 'faqsection', 'formsection',
+  'popularityname',
+] as const;
+
+export type DocumentFieldKey = (typeof DOCUMENT_FIELD_KEYS)[number];
+export type FieldStateStatus =
+  | 'extracted'
+  | 'explicitly_empty'
+  | 'unresolved'
+  | 'requires_review'
+  | 'invalid'
+  | 'missing';
+
+export const FieldStateSchema = z.object({
+  status: z.enum(['extracted', 'explicitly_empty', 'unresolved', 'requires_review', 'invalid', 'missing']),
+  uploadStatus: z.enum(['ready', 'manual', 'unsupported', 'not_ready', 'blocked']).optional(),
+  reason: z.string().optional(),
+  rawValue: z.string().optional(),
+  imageIndex: z.number().int().nonnegative().optional(),
+}).strict();
+
+export type FieldState = z.infer<typeof FieldStateSchema>;
+export const FieldStatesSchema = z.record(FieldStateSchema);
+export type FieldStates = z.infer<typeof FieldStatesSchema>;
+
+export interface DocumentFieldMapping {
+  label: string;
+  aliases?: readonly string[];
+  internalField: DocumentFieldKey;
+  strapiField: string | null;
+  dataType: string;
+  kind: 'scalar' | 'component' | 'media' | 'relation' | 'unsupported';
+  required: boolean;
+  localized: boolean;
+  extractionStrategy: string;
+  validation: string;
+  transformation: string;
+  automatic: boolean;
+  note?: string;
+}
+
 /**
- * Real Strapi 5 Article content type payload schema.
- * Derived from inspected `my-strapi/src/api/article/content-types/article/schema.json`:
- * - Title (string)
- * - slug (uid)
- * - description (text)
- * - content (richtext)
- * Note: coverImage is a media field uploaded separately and attached by ID.
+ * Verified against the checked-in Strapi article and component schemas.
+ */
+const FIELD_MAPPING_DEFINITIONS: readonly Omit<
+  DocumentFieldMapping,
+  'kind' | 'required' | 'localized' | 'extractionStrategy' | 'validation' | 'transformation'
+>[] = [
+  { label: 'Title', aliases: ['Article Title'], internalField: 'title', strapiField: 'Title', dataType: 'string', automatic: true },
+  { label: 'Description', aliases: ['Summary', 'Abstract'], internalField: 'description', strapiField: 'description', dataType: 'text', automatic: true },
+  { label: 'Slug', aliases: ['URL Slug'], internalField: 'slug', strapiField: 'slug', dataType: 'uid', automatic: true },
+  { label: 'Cover', aliases: ['Cover Image', 'Cover Photo'], internalField: 'cover', strapiField: 'coverImage', dataType: 'single image media', automatic: true, note: 'Only an image explicitly referenced in the Cover field is eligible.' },
+  { label: 'Default SEO / metaTitle', aliases: ['SEO Title', 'metaTitle', 'Default SEO metaTitle'], internalField: 'defaultSeo.metaTitle', strapiField: 'seo.metaTitle', dataType: 'component string', automatic: true },
+  { label: 'Default SEO / metaDescription', aliases: ['SEO Description', 'metaDescription', 'Default SEO metaDescription'], internalField: 'defaultSeo.metaDescription', strapiField: 'seo.metaDescription', dataType: 'component string', automatic: true },
+  { label: 'Default SEO / keywords', aliases: ['SEO Keywords', 'keywords', 'Default SEO keywords'], internalField: 'defaultSeo.keywords', strapiField: 'seo.keywords', dataType: 'component text', automatic: true, note: 'Keyword arrays are serialized as comma-separated text.' },
+  { label: 'Default SEO / metaRobots', aliases: ['Robots', 'metaRobots', 'Default SEO metaRobots'], internalField: 'defaultSeo.metaRobots', strapiField: 'seo.metaRobots', dataType: 'component string', automatic: true },
+  { label: 'Default SEO / structuredData', aliases: ['structuredData', 'Default SEO structuredData'], internalField: 'defaultSeo.structuredData', strapiField: 'seo.structuredData', dataType: 'component string', automatic: true },
+  { label: 'Default SEO / metaViewPort', aliases: ['Meta Viewport', 'Viewport', 'metaViewport', 'Default SEO metaViewPort'], internalField: 'defaultSeo.metaViewPort', strapiField: 'seo.metaViewport', dataType: 'component string', automatic: true },
+  { label: 'Default SEO / canonicalURL', aliases: ['Canonical', 'canonicalURL', 'Default SEO canonicalURL'], internalField: 'defaultSeo.canonicalURL', strapiField: 'seo.canonicalURL', dataType: 'component string', automatic: true },
+  { label: 'Default SEO / shareImage', aliases: ['shareImage'], internalField: 'defaultSeo.shareImage', strapiField: null, dataType: 'media', automatic: false, note: 'The component has metaImage and metaSocial, but no verified shareImage mapping.' },
+  { label: 'Content', aliases: ['Main Content'], internalField: 'content', strapiField: 'content', dataType: 'richtext string', automatic: true },
+  { label: 'Date', aliases: ['Published Date', 'Published'], internalField: 'date', strapiField: 'date', dataType: 'date', automatic: true },
+  { label: 'Authordata', aliases: ['Author', 'By'], internalField: 'authordata', strapiField: 'Authordata.authorName', dataType: 'component', automatic: true, note: 'Maps a provided author name only; no relation or media ID is inferred.' },
+  { label: 'Category Name', aliases: ['Category'], internalField: 'categoryname', strapiField: 'categoryName', dataType: 'string', automatic: true },
+  { label: 'Content New', aliases: ['contentNew'], internalField: 'contentnew', strapiField: 'contentNew', dataType: 'component with Blocks', automatic: false, note: 'Plain text is not converted into an invented Blocks structure.' },
+  { label: 'Button', aliases: ['Button Text', 'Button URL', 'Button Link'], internalField: 'button', strapiField: 'button.link', dataType: 'component string', automatic: true, note: 'Only URL/path-shaped values are accepted as links.' },
+  { label: 'Button Title', aliases: ['buttontitle'], internalField: 'buttontitle', strapiField: 'buttontitle', dataType: 'string', automatic: true },
+  { label: 'Button Subtitle', aliases: ['buttonsubtitle'], internalField: 'buttonsubtitle', strapiField: 'buttonsubtitle', dataType: 'string', automatic: true },
+  { label: 'Blog Categories', aliases: ['Categories', 'blogcategories'], internalField: 'blogcategories', strapiField: 'tital_blog_category', dataType: 'one-to-one relation', automatic: false, note: 'The current relation targets Article, not a category content type.' },
+  { label: 'Time', aliases: ['Read Time'], internalField: 'time', strapiField: 'time', dataType: 'string', automatic: true },
+  { label: 'FAQ Section', aliases: ['FAQ', 'Frequently Asked Questions'], internalField: 'faqsection', strapiField: null, dataType: 'not in schema', automatic: false },
+  { label: 'Form Section', aliases: ['Form'], internalField: 'formsection', strapiField: null, dataType: 'not in schema', automatic: false },
+  { label: 'Popularity Name', aliases: ['Popularity'], internalField: 'popularityname', strapiField: null, dataType: 'not in schema', automatic: false },
+];
+
+export const DOCUMENT_FIELD_MAPPINGS: readonly DocumentFieldMapping[] = FIELD_MAPPING_DEFINITIONS.map((entry) => ({
+  ...entry,
+  kind: entry.strapiField === null
+    ? 'unsupported'
+    : entry.dataType.includes('media')
+      ? 'media'
+      : entry.dataType.includes('relation')
+        ? 'relation'
+        : entry.dataType.includes('component')
+          ? 'component'
+          : 'scalar',
+  required: false,
+  localized: false,
+  extractionStrategy: entry.dataType.includes('media')
+    ? 'Explicit embedded-image marker in the labeled field; otherwise manual selection.'
+    : 'Normalized table label, labeled paragraph, or heading followed by its value; AI may supplement only absent fields.',
+  validation: entry.internalField === 'date'
+    ? 'Real calendar date in YYYY-MM-DD format.'
+    : entry.internalField === 'button'
+      ? 'HTTP(S) URL, root-relative path, or fragment only.'
+      : entry.dataType,
+  transformation: entry.internalField === 'defaultSeo.keywords'
+    ? 'Keyword array to comma-separated Strapi text.'
+    : entry.internalField === 'defaultSeo.metaViewPort'
+      ? 'Map document spelling to seo.metaViewport.'
+      : entry.internalField === 'authordata'
+        ? 'Wrap a provided author name in the Authordata component.'
+        : entry.internalField === 'slug'
+          ? 'Normalize to a lowercase hyphenated UID.'
+          : 'None.',
+}));
+
+/**
+ * Real Strapi 5 Article payload allowlist. Media, unresolved relations, and
+ * extraction-only fields are intentionally excluded.
  */
 export const StrapiArticlePayloadSchema = z.object({
   Title: z
@@ -76,7 +184,23 @@ export const StrapiArticlePayloadSchema = z.object({
     .optional(),
   description: z.string().max(1000, 'Description should be under 1000 chars').nullable().optional(),
   content: z.string().nullable().optional(),
-});
+  date: z.string().refine(isValidIsoDate, 'Date must be a real date in YYYY-MM-DD format').nullable().optional(),
+  seo: z.object({
+    metaTitle: z.string().nullable().optional(),
+    metaDescription: z.string().nullable().optional(),
+    keywords: z.string().nullable().optional(),
+    metaRobots: z.string().nullable().optional(),
+    structuredData: z.string().nullable().optional(),
+    metaViewport: z.string().nullable().optional(),
+    canonicalURL: z.string().nullable().optional(),
+  }).strict().optional(),
+  Authordata: z.object({ authorName: z.string().optional() }).strict().optional(),
+  categoryName: z.string().nullable().optional(),
+  button: z.object({ link: z.string().optional() }).strict().optional(),
+  buttontitle: z.string().nullable().optional(),
+  buttonsubtitle: z.string().nullable().optional(),
+  time: z.string().nullable().optional(),
+}).strict();
 
 export type StrapiArticlePayload = z.infer<typeof StrapiArticlePayloadSchema>;
 
@@ -91,14 +215,17 @@ export type ArticlePayload = StrapiArticlePayload;
 export const AiMappingResultSchema = z.object({
   fields: DocumentFieldsSchema.describe('Field-by-field extracted document values'),
   payload: StrapiArticlePayloadSchema.describe('Constructed Strapi 5 draft payload'),
+  fieldStates: FieldStatesSchema,
   missingFields: z
     .array(z.string())
-    .describe('Fields that were absent in the document or schema'),
+    .describe('Known document fields that were absent. Explicitly empty and unresolved states are tracked separately.'),
+  unmappedFields: z.array(z.object({ label: z.string(), value: z.string() }).strict()),
   ambiguities: z
     .array(z.string())
     .describe('Cases where mapping was uncertain; human review recommended'),
+  warnings: z.array(z.string()),
   confidence: z.enum(['high', 'medium', 'low']).describe('Overall mapping confidence'),
-});
+}).strict();
 
 export type AiMappingResult = z.infer<typeof AiMappingResultSchema>;
 
@@ -130,7 +257,7 @@ export function validateArticlePayload(
   const missingErrors: z.ZodIssue[] = [];
 
   for (const field of required) {
-    const val = (result.data as any)[field];
+    const val = result.data[field];
     if (val === undefined || val === null || (typeof val === 'string' && val.trim() === '')) {
       missingErrors.push({
         code: z.ZodIssueCode.custom,
@@ -160,50 +287,98 @@ export function slugify(title: string): string {
     .substring(0, 128);
 }
 
+export function isValidIsoDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+
 /**
  * Build the Strapi 5 REST API draft payload from independently extracted document fields.
- * Follows inspected Strapi 5 schema:
- * - Uses exact attribute name `Title` (PascalCase in schema.json).
- * - Maps `description`, `slug`, `content`.
- * - Leaves optional empty fields as null or omitted.
- * - NEVER dumps unmapped fields (authordata, faqsection, defaultSeo, buttons) into `content`.
+ * Missing, explicitly empty, unresolved, and invalid values are omitted so they
+ * cannot clear an existing CMS value if this payload is later used as a patch.
  */
-export function buildStrapiPayload(fields: DocumentFields): StrapiArticlePayload {
+export function buildStrapiPayload(
+  fields: DocumentFields,
+  fieldStates: FieldStates = {}
+): StrapiArticlePayload {
   const payload: StrapiArticlePayload = {};
+  const canWrite = (key: DocumentFieldKey) =>
+    fieldStates[key] === undefined || fieldStates[key].status === 'extracted';
 
-  // Title: use explicit title, fallback to null if empty
-  if (fields.title && fields.title.trim().length > 0) {
+  if (canWrite('title') && fields.title?.trim()) {
     payload.Title = fields.title.trim().substring(0, 255);
-  } else {
-    payload.Title = null;
   }
 
-  // Slug: use explicit slug or safely derive from title
-  if (fields.slug && fields.slug.trim().length > 0) {
+  if (canWrite('slug') && fields.slug?.trim()) {
     payload.slug = slugify(fields.slug.trim());
-  } else if (payload.Title) {
+  } else if (
+    canWrite('title') &&
+    payload.Title &&
+    (fieldStates.slug === undefined || fieldStates.slug.status === 'missing')
+  ) {
     payload.slug = slugify(payload.Title);
-  } else {
-    payload.slug = null;
   }
 
-  // Description: use explicit description, fallback to null
-  if (fields.description && fields.description.trim().length > 0) {
+  if (canWrite('description') && fields.description?.trim()) {
     payload.description = fields.description.trim().substring(0, 1000);
-  } else {
-    payload.description = null;
   }
 
-  // Content: ONLY the main article body. Never concatenate other fields!
-  if (fields.content && fields.content.trim().length > 0) {
+  if (canWrite('content') && fields.content?.trim()) {
     payload.content = fields.content.trim();
-  } else {
-    payload.content = null;
+  }
+
+  if (canWrite('date') && fields.date && isValidIsoDate(fields.date)) {
+    payload.date = fields.date;
+  }
+  if (canWrite('authordata') && fields.authordata?.trim()) {
+    payload.Authordata = { authorName: fields.authordata.trim() };
+  }
+  if (canWrite('categoryname') && fields.categoryname?.trim()) {
+    payload.categoryName = fields.categoryname.trim();
+  }
+  if (canWrite('button') && fields.button && isSafeButtonLink(fields.button)) {
+    payload.button = { link: fields.button.trim() };
+  }
+  if (canWrite('buttontitle') && fields.buttontitle?.trim()) {
+    payload.buttontitle = fields.buttontitle.trim();
+  }
+  if (canWrite('buttonsubtitle') && fields.buttonsubtitle?.trim()) {
+    payload.buttonsubtitle = fields.buttonsubtitle.trim();
+  }
+  if (canWrite('time') && fields.time?.trim()) {
+    payload.time = fields.time.trim();
+  }
+
+  const seo = fields.defaultSeo;
+  const seoPayload: NonNullable<StrapiArticlePayload['seo']> = {};
+  const addSeo = (key: keyof NonNullable<DocumentFields['defaultSeo']>, target: keyof typeof seoPayload) => {
+    const stateKey = `defaultSeo.${key}` as DocumentFieldKey;
+    const value = seo?.[key];
+    if (canWrite(stateKey) && typeof value === 'string' && value.trim()) {
+      seoPayload[target] = value.trim();
+    }
+  };
+  addSeo('metaTitle', 'metaTitle');
+  addSeo('metaDescription', 'metaDescription');
+  addSeo('metaRobots', 'metaRobots');
+  addSeo('structuredData', 'structuredData');
+  addSeo('metaViewPort', 'metaViewport');
+  addSeo('canonicalURL', 'canonicalURL');
+  if (canWrite('defaultSeo.keywords') && seo?.keywords?.length) {
+    seoPayload.keywords = seo.keywords.join(', ');
+  }
+  if (Object.keys(seoPayload).length > 0) {
+    payload.seo = seoPayload;
   }
 
   return payload;
 }
 
+function isSafeButtonLink(value: string): boolean {
+  const trimmed = value.trim();
+  return /^https?:\/\/\S+$/i.test(trimmed) || /^\/[^/\s][^\s]*$/.test(trimmed) || /^#[^\s]+$/.test(trimmed);
+}
 /**
  * JSON Schema for Gemini / OpenAI Structured Outputs.
  * Defines the contract where EVERY field is extracted independently.
@@ -217,7 +392,7 @@ export const AI_OUTPUT_JSON_SCHEMA = {
         title: { type: ['string', 'null'], description: 'Article title only, max 255 chars' },
         description: { type: ['string', 'null'], description: 'Short summary / abstract, max 1000 chars' },
         slug: { type: ['string', 'null'], description: 'URL slug: lowercase, hyphens only' },
-        cover: { type: ['string', 'null'], description: 'Media asset identifier if present, else null. Text placeholders are null.' },
+        cover: { type: ['string', 'null'], description: 'Explicit embedded-image marker only; do not invent media IDs or treat placeholder text as an image.' },
         defaultSeo: {
           type: ['object', 'null'],
           properties: {
@@ -228,7 +403,7 @@ export const AI_OUTPUT_JSON_SCHEMA = {
             structuredData: { type: ['string', 'null'] },
             metaViewPort: { type: ['string', 'null'] },
             canonicalURL: { type: ['string', 'null'] },
-            shareImage: { type: ['string', 'null'] },
+            shareImage: { type: ['string', 'null'], description: 'Extract only a supplied asset reference; never invent a media ID.' },
           },
           required: ['keywords'],
         },
