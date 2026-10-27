@@ -3,7 +3,10 @@
   import ConnectionStatus from './lib/ConnectionStatus.svelte'
   import SchemaExplorer from './lib/SchemaExplorer.svelte'
   import DataViewer from './lib/DataViewer.svelte'
+  import ImportPage from './lib/ImportPage.svelte'
   import { pingStrapi, fetchStrapiSchema } from './lib/strapiQueries.js'
+
+  let activeTab = 'explorer' // 'explorer' | 'import'
 
   const GRAPHQL_URL = import.meta.env.VITE_STRAPI_GRAPHQL_URL || 'http://localhost:1337/graphql'
 
@@ -68,6 +71,20 @@
         <span class="tag" style="font-size: 0.65rem;">Svelte + TailwindCSS</span>
       </div>
 
+      <!-- Tab switcher -->
+      <div class="flex items-center gap-1" style="background: rgba(255,255,255,0.04); border: 1px solid var(--border); border-radius: 10px; padding: 4px;">
+        <button
+          class="btn text-xs px-3 py-1.5"
+          style="border-radius: 7px; transition: background 0.2s; {activeTab === 'explorer' ? 'background: linear-gradient(135deg,#6366f1,#8b5cf6); color:white;' : 'background:transparent; color:var(--text-muted);'}"
+          on:click={() => activeTab = 'explorer'}
+        >GraphQL Explorer</button>
+        <button
+          class="btn text-xs px-3 py-1.5"
+          style="border-radius: 7px; transition: background 0.2s; {activeTab === 'import' ? 'background: linear-gradient(135deg,#6366f1,#8b5cf6); color:white;' : 'background:transparent; color:var(--text-muted);'}"
+          on:click={() => activeTab = 'import'}
+        >📄 Word Import</button>
+      </div>
+
       <div class="flex items-center gap-3">
         <a href="http://localhost:1337/admin" target="_blank"
            class="btn btn-ghost text-xs px-3 py-2">
@@ -100,6 +117,10 @@
 
   <!-- Main content -->
   <main class="mx-auto px-6 py-10 flex flex-col gap-8" style="max-width: 1200px;">
+
+  {#if activeTab === 'import'}
+    <ImportPage />
+  {:else}
 
     <!-- Hero -->
     <div class="fade-in">
@@ -182,6 +203,7 @@
         <DataViewer disabled={connectionStatus !== 'connected'} />
       </div>
     </div>
+  {/if}
 
     <!-- Raw env info (helpful during development) -->
     <details class="glass-card p-4 text-xs" style="color: var(--text-muted);">
