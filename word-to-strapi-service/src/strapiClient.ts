@@ -1,6 +1,6 @@
-import FormData from 'form-data';
 import type { ArticlePayload } from './schema';
 import type { ExtractedImage } from './extract';
+import type { ImportCollection } from './collections';
 
 export interface StrapiCreateResult {
   documentId: string;
@@ -43,11 +43,37 @@ export class StrapiClient {
   async findByTitle(title: string): Promise<{ documentId: string; id: number } | null> {
     const url = `${this.baseUrl}/api/articles?filters[Title][$eq]=${encodeURIComponent(title)}&status=draft&fields=documentId,id`;
     const res = await this.fetchWithTimeout(url, { headers: this.headers });
-    if (!res.ok) return null;
+    if (!res.ok) await this.throwStrapiError(res);
     const json = await res.json() as any;
     const items = json?.data ?? [];
     if (items.length === 0) return null;
     return { documentId: items[0].documentId, id: items[0].id };
+  }
+
+  async findByField(
+    collection: ImportCollection,
+    field: string,
+    value: string,
+  ): Promise<{ documentId: string; id: number } | null> {
+    if (!collection.fields.some((candidate) => candidate.name === field && candidate.supported)) {
+      throw new Error(`Duplicate field "${field}" is not part of the verified ${collection.uid} schema.`);
+    }
+
+    const params = new URLSearchParams({
+      [`filters[${field}][$eq]`]: value,
+      status: 'draft',
+      'fields[0]': 'documentId',
+      'fields[1]': 'id',
+    });
+    const res = await this.fetchWithTimeout(
+      `${this.baseUrl}/api/${collection.apiName}?${params.toString()}`,
+      { headers: this.headers },
+    );
+    if (!res.ok) await this.throwStrapiError(res);
+    const json = await res.json() as any;
+    const item = json?.data?.[0];
+    if (!item) return null;
+    return { documentId: item.documentId, id: item.id };
   }
 
   /** Create a DRAFT article entry. Never publishes. */
@@ -79,29 +105,72 @@ export class StrapiClient {
     };
   }
 
-  /** Upload an image file and return its Strapi media id. */
+  async createDraftForCollection(
+    collection: ImportCollection,
+    payload: Record<string, unknown>,
+  ): Promise<StrapiCreateResult> {
+    const status = collection.draftAndPublish ? '?status=draft' : '';
+    const res = await this.fetchWithRetry(
+      `${this.baseUrl}/api/${collection.apiName}${status}`,
+      {
+        method: 'POST',
+        headers: this.headers,
+        body: JSON.stringify({ data: payload }),
+      },
+    );
+
+    if (!res.ok) await this.throwStrapiError(res);
+
+    const json = await res.json() as any;
+    const entry = json?.data;
+    if (!entry?.documentId) {
+      throw new Error('Strapi returned no documentId after create');
+    }
+
+    return {
+      documentId: entry.documentId,
+      id: entry.id,
+      slug: entry.slug ?? null,
+      adminLink: `${this.baseUrl}/admin/content-manager/${collection.kind === 'singleType' ? 'single-types' : 'collection-types'}/${collection.uid}/${entry.documentId}`,
+    };
+  }
+
+  /**
+   * Upload an image file and return its Strapi media id.
+   * @param img - The image to upload
+   * @param refId - The numeric ID of the entry to attach to
+   * @param field - The field name to attach to (e.g. 'coverImage')
+   * @param ref - The content type UID (e.g. 'api::article.article')
+   */
   async uploadMedia(
     img: ExtractedImage,
     refId: number,
-    field: string
+    field: string,
+    ref: string = 'api::article.article',
   ): Promise<number> {
     const url = `${this.baseUrl}/api/upload`;
-    const form = new FormData();
-    form.append('files', img.buffer, {
-      filename: img.filename,
-      contentType: img.contentType,
-    });
+    const form = new globalThis.FormData();
+    form.append('files', new Blob([new Uint8Array(img.buffer)], { type: img.contentType }), img.filename);
+    const fileInfo: { name: string; alternativeText?: string; caption?: string } = {
+      name: img.filename,
+    };
+    if (img.altText && !/^Image \d+$/i.test(img.altText)) {
+      fileInfo.alternativeText = img.altText;
+    }
+    if (img.caption || (img.location && img.location !== 'Document')) {
+      fileInfo.caption = img.caption || img.location;
+    }
+    form.append('fileInfo', JSON.stringify(fileInfo));
     form.append('refId', String(refId));
-    form.append('ref', 'api::article.article');
+    form.append('ref', ref);
     form.append('field', field);
 
     const res = await this.fetchWithRetry(url, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${this.token}`,
-        ...form.getHeaders(),
       },
-      body: form as any,
+      body: form,
     });
 
     if (!res.ok) {
@@ -110,7 +179,10 @@ export class StrapiClient {
 
     const json = await res.json() as any;
     const uploaded = Array.isArray(json) ? json[0] : json;
-    return uploaded?.id as number;
+    if (!Number.isSafeInteger(uploaded?.id) || uploaded.id <= 0) {
+      throw new Error('Strapi upload response did not contain a valid media id.');
+    }
+    return uploaded.id;
   }
 
   /** Fetch an article by documentId to verify saved data. */
@@ -129,6 +201,27 @@ export class StrapiClient {
     return json?.data ?? {};
   }
 
+  async getByDocumentIdForCollection(
+    collection: ImportCollection,
+    documentId: string,
+  ): Promise<Record<string, unknown>> {
+    const query = new URLSearchParams();
+    if (collection.draftAndPublish) query.set('status', 'draft');
+    for (const field of collection.fields) {
+      if (field.type === 'media' || field.type === 'component' || field.type === 'dynamiczone') {
+        query.set(`populate[${field.name}]`, 'true');
+      }
+    }
+    const suffix = query.toString();
+    const url = collection.kind === 'singleType'
+      ? `${this.baseUrl}/api/${collection.apiName}${suffix ? `?${suffix}` : ''}`
+      : `${this.baseUrl}/api/${collection.apiName}/${encodeURIComponent(documentId)}${suffix ? `?${suffix}` : ''}`;
+    const res = await this.fetchWithTimeout(url, { headers: this.headers });
+    if (!res.ok) await this.throwStrapiError(res);
+    const json = await res.json() as any;
+    return json?.data ?? {};
+  }
+
   private async fetchWithRetry(url: string, init: RequestInit, attempt = 1): Promise<Response> {
     try {
       return await this.fetchWithTimeout(url, init);
@@ -140,7 +233,7 @@ export class StrapiClient {
     }
   }
 
-  private async fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+  async fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
     try {
@@ -167,7 +260,7 @@ export class StrapiClient {
 function getHint(status: number): string | undefined {
   const hints: Record<number, string> = {
     401: 'Token is invalid or expired. Check STRAPI_API_TOKEN.',
-    403: 'Token lacks permission. In Strapi Admin → Settings → API Tokens, enable: Article:create, Upload:create.',
+    403: 'Token lacks permission. In Strapi Admin → Settings → API Tokens, enable find/create for the selected content type; Article media uploads also require Upload:create.',
     400: 'Payload shape is invalid. Check field names match the schema.',
     404: 'Entry not found. Check the documentId.',
     413: 'File too large. Check Strapi upload size limits.',

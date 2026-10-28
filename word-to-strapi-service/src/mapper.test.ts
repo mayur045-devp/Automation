@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { ruleBasedMapping, mapDocumentToArticle } from '../src/mapper.js';
+import { ruleBasedMapping, mapDocumentToArticle, mapDocumentToCollection } from '../src/mapper.js';
 import {
   buildStrapiPayload,
   DOCUMENT_FIELD_KEYS,
@@ -7,6 +7,7 @@ import {
   validateArticlePayload,
 } from '../src/schema.js';
 import { StrapiClient } from '../src/strapiClient.js';
+import { getImportCollection } from '../src/collections.js';
 import { diffPayload } from '../src/index.js';
 import type { ExtractedDocument } from '../src/extract.js';
 
@@ -498,6 +499,44 @@ describe('Rule-Based and AI Mapping — Field Independence', () => {
     expect(result.payload.slug).toBe('ai-extracted-title');
     expect(result.fieldStates.title.status).toBe('extracted');
   });
+
+  it('uses only the selected Blog schema in its AI prompt and payload mapping', async () => {
+    const doc = createMockDoc({
+      title: null,
+      description: 'Document summary',
+      content: 'Preserved blog body',
+      rawText: 'Unlabeled document text',
+    });
+    const collection = getImportCollection('api::blog.blog');
+    expect(collection).toBeDefined();
+    let prompt = '';
+
+    const result = await mapDocumentToCollection(
+      doc,
+      collection!,
+      'test-key',
+      'mock-model',
+      async (receivedPrompt) => {
+        prompt = receivedPrompt;
+        return JSON.stringify({
+          fields: {
+            title: 'AI blog title',
+            unrelatedArticleField: 'must not be written',
+          },
+        });
+      },
+    );
+
+    expect(prompt).toContain('Selected collection: Blog (api::blog.blog)');
+    expect(prompt).toContain('- title: string');
+    expect(prompt).not.toContain('seo');
+    expect(result.payload).toEqual({
+      title: 'AI blog title',
+      description: 'Document summary',
+      content: 'Preserved blog body',
+    });
+    expect(result.warnings.some((warning) => warning.includes('unrelatedArticleField'))).toBe(true);
+  });
 });
 
 describe('Strapi Client and Duplicate Prevention', () => {
@@ -548,6 +587,47 @@ describe('Strapi Client and Duplicate Prevention', () => {
 
     expect(created.documentId).toBe('doc_new_99');
     expect(created.id).toBe(99);
+  });
+
+  it('creates a selected Blog draft using its trusted collection API name', async () => {
+    const client = new StrapiClient('http://localhost:1337', 'mock-token');
+    const collection = getImportCollection('api::blog.blog');
+    expect(collection).toBeDefined();
+
+    vi.spyOn(globalThis, 'fetch').mockImplementationOnce(async (url, init: any) => {
+      expect(url.toString()).toContain('/api/blogs?status=draft');
+      expect(JSON.parse(init.body)).toEqual({
+        data: { title: 'A Blog Entry', description: 'Summary', content: 'Body' },
+      });
+      return {
+        ok: true,
+        json: async () => ({ data: { id: 53, documentId: 'blog-doc-53', title: 'A Blog Entry' } }),
+      } as any;
+    });
+
+    const created = await client.createDraftForCollection(collection!, {
+      title: 'A Blog Entry',
+      description: 'Summary',
+      content: 'Body',
+    });
+
+    expect(created.documentId).toBe('blog-doc-53');
+    expect(created.adminLink).toContain('/api::blog.blog/blog-doc-53');
+  });
+
+  it('does not continue when duplicate lookup is forbidden', async () => {
+    const client = new StrapiClient('http://localhost:1337', 'mock-token');
+    const collection = getImportCollection('api::blog.blog');
+    expect(collection).toBeDefined();
+    vi.spyOn(globalThis, 'fetch').mockImplementationOnce(async () => ({
+      ok: false,
+      status: 403,
+      statusText: 'Forbidden',
+      json: async () => ({ error: { message: 'Forbidden' } }),
+    } as any));
+
+    await expect(client.findByField(collection!, 'title', 'Blog title'))
+      .rejects.toThrow('Strapi 403: Forbidden');
   });
 
   // Requirement 11:

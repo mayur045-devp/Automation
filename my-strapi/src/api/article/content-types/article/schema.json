@@ -82,6 +82,12 @@
       "type": "component",
       "component": "component.quizedata",
       "repeatable": false
+    },
+    "faqSection": {
+      "type": "enumeration",
+      "enum": [
+        "first"
+      ]
     }
   }
 }

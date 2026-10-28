@@ -1,12 +1,17 @@
 import crypto from 'crypto';
-import type { ArticlePayload, AiMappingResult } from './schema.js';
+import type { AiMappingResult } from './schema.js';
+import type { ExtractedDocument } from './extract.js';
 import type { ExtractedImage } from './extract.js';
+import type { CollectionMappingResult } from './mapper.js';
 
 export interface PendingImport {
   importId: string;
-  payload: ArticlePayload;
-  aiResult: AiMappingResult;
+  collectionId: string;
+  connectionOrigin: string;
+  payload: Record<string, unknown>;
+  aiResult: AiMappingResult | CollectionMappingResult;
   images: ExtractedImage[];
+  document?: ExtractedDocument;
   filename: string;
   createdAt: number;
 }
@@ -16,13 +21,26 @@ const store = new Map<string, PendingImport>();
 const TTL_MS = 30 * 60 * 1000;
 
 export function createImport(
-  payload: ArticlePayload,
-  aiResult: AiMappingResult,
+  collectionId: string,
+  connectionOrigin: string,
+  payload: Record<string, unknown>,
+  aiResult: AiMappingResult | CollectionMappingResult,
   images: ExtractedImage[],
-  filename: string
+  filename: string,
+  document?: ExtractedDocument,
 ): string {
   const importId = crypto.randomUUID();
-  store.set(importId, { importId, payload, aiResult, images, filename, createdAt: Date.now() });
+  store.set(importId, {
+    importId,
+    collectionId,
+    connectionOrigin,
+    payload,
+    aiResult,
+    images,
+    document,
+    filename,
+    createdAt: Date.now(),
+  });
   return importId;
 }
 
@@ -33,6 +51,13 @@ export function getImport(importId: string): PendingImport | undefined {
     store.delete(importId);
     return undefined;
   }
+  return item;
+}
+
+export function claimImport(importId: string): PendingImport | undefined {
+  const item = getImport(importId);
+  if (!item) return undefined;
+  store.delete(importId);
   return item;
 }
 

@@ -475,6 +475,43 @@ describe('extractDocx', () => {
     expect(doc.fieldStates.cover.reason).toContain('was not extracted');
   });
 
+  it('extracts multiple embedded image binaries and preserves their document locations', async () => {
+    const { Document, Paragraph, HeadingLevel, ImageRun, Packer } = await import('docx');
+    const imageBytes = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=',
+      'base64',
+    );
+    const makeImage = (description: string) => new ImageRun({
+      type: 'png',
+      data: imageBytes,
+      transformation: { width: 1, height: 1 },
+      altText: { name: description, description, title: description },
+    });
+    const buffer = await Packer.toBuffer(new Document({
+      sections: [{
+        children: [
+          new Paragraph({ text: 'Cover image', heading: HeadingLevel.HEADING_2 }),
+          new Paragraph({ children: [makeImage('Cover photo')] }),
+          new Paragraph({ text: 'Share image', heading: HeadingLevel.HEADING_2 }),
+          new Paragraph({ children: [makeImage('Social preview')] }),
+        ],
+      }],
+    }));
+
+    const doc = await extractDocx(buffer, 'images.docx');
+
+    expect(doc.images).toHaveLength(2);
+    expect(doc.images[0].buffer).toEqual(imageBytes);
+    expect(doc.images[1].buffer).toEqual(imageBytes);
+    expect(doc.images[0].altText).toBe('Cover photo');
+    expect(doc.images[0].location).toContain('Cover image');
+    expect(doc.images[1].location).toContain('Share image');
+    expect(doc.rawText).toContain('[IMAGE_0]');
+    expect(doc.rawText).toContain('[IMAGE_1]');
+    expect(doc.fieldStates.cover.status).toBe('extracted');
+    expect(doc.fieldStates.cover.imageIndex).toBe(0);
+  });
+
   // Reproduction of user screenshot document format
   it('extracts every supplied template field and preserves empty/unresolved distinctions', async () => {
     const buffer = await getBlogContentEntryTemplateDocxBuffer();

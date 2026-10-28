@@ -1,5 +1,15 @@
 # DOCX import contract
 
+## Dynamic collection targets
+
+The Word Import workflow uses the authenticated Strapi Content-Type Builder API to discover all user-defined collection types and single types. GraphQL introspection does not filter this list. `STRAPI_IMPORT_COLLECTIONS` may restrict discovered UIDs. If authorized discovery is unavailable, the service reports the limitation and falls back to the static Article/Blog registry; that fallback cannot include newly created content types.
+
+`GET /api/import/collections` requires a `connectionOrigin` that matches the configured `STRAPI_URL` origin. `POST /api/import/collections/refresh` re-fetches authorized live metadata and replaces the cache. Content-Type Builder access requires a server-side `STRAPI_ADMIN_JWT` with the relevant read permission. GraphQL introspection does not prove create permission: Strapi enforces the service token's actual permissions on each REST operation. The uploader does not accept a browser-provided URL or token.
+
+Preview requests pass `collectionId` and `connectionOrigin` with the DOCX. The service resolves the target from current live metadata or its static fallback, maps only supported fields for that target, validates the payload against the target schema, and stores the trusted target identity with the preview. Confirm re-resolves the target, rechecks the connection origin and payload, checks the configured duplicate identifier, creates a draft at the target-derived REST route, and verifies the created entry. Unknown fields from AI output are ignored and reported. Relations and unsupported components are not guessed.
+
+The schema-aware generic mapper compares extracted fields with the selected live schema and classifies compatible, missing, conflicting, and unsupported fields. Simple scalar additions and explicitly inferred image fields can be reviewed and approved individually. The Content-Type Builder update route is development-only in supported Strapi setups and requires authorized admin access; production deployments that do not expose this route must add fields through Strapi's supported project schema workflow, then refresh and re-analyze. Existing fields are never replaced or removed. Components, dynamic zones, relations, localization, and uncertain nested structures require manual configuration.
+
 ## What changed
 
 The previous preview exposed a Strapi payload limited to `Title`, `slug`, `description`, and `content`. The extraction layer already recognized some extra labels, but the payload builder discarded them. The updated preview separates:
@@ -114,14 +124,14 @@ In the current implementation, `missingFields` lists only absent fields; explici
 
 ## CMS payload and uploader behavior
 
-`confirm` sends `POST /api/articles?status=draft` with `{ "data": <payload> }`, using Strapi 5 REST draft creation. The client does not update existing documents. An existing draft with the same Title causes a `409` conflict; no slug-based match or update is attempted.
+`confirm` sends the selected collection's Strapi 5 REST draft-creation request with `{ "data": <payload> }`. Single types are handled as one shared entry and do not use collection duplicate checks. The client does not update existing documents. An existing matching collection entry causes a `409` conflict; no existing entry is overwritten.
 
-The uploader accepts the expanded allowlisted payload keys `Title`, `slug`, `description`, `content`, `date`, `seo`, `Authordata`, `categoryName`, `button`, `buttontitle`, `buttonsubtitle`, and `time`. It intentionally omits unresolved relations, unsupported fields, and empty/missing values. An embedded image is uploaded to `coverImage` only when the DOCX explicitly references that image in its Cover field; unrelated embedded images are never guessed to be the cover.
+The uploader validates the preview against the selected content type and omits unresolved relations, unsupported fields, and empty/missing values. Mammoth extracts embedded image bytes and retains stable image indices, captions, alt text, and nearby document locations. A confidently identified image can be assigned automatically; otherwise the preview permits manual image-to-field assignment. The service uploads assigned binary files to Strapi's upload endpoint with the entry ID, content type UID, and media field name, then verifies each uploaded media ID is linked in the saved entry. Unassigned images must be explicitly skipped; no image reference or CMS ID is fabricated.
 
 If a separate teammate-owned uploader consumes the preview response, it must:
 
 1. Use `preview.payload` as the only CMS payload; do not send `preview.fields` directly.
 2. Preserve the `seo`, `Authordata`, and `button` component object shapes.
 3. Keep `fieldStates` out of the CMS request and honor non-`extracted` states as non-uploadable.
-4. Resolve the media index from `fieldStates.cover.imageIndex` only when present; never attach the first arbitrary embedded image.
+4. Preserve each image's binary and preview metadata, and use an explicit `fieldStates` or user-approved image-to-field assignment; never attach the first arbitrary image or fabricate a Strapi media ID.
 5. Continue using Strapi 5 `documentId` for any explicitly implemented update workflow and require a verified match/confirmation. No update workflow is currently implemented.

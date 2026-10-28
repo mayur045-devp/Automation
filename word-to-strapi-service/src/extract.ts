@@ -1,12 +1,23 @@
-import mammoth from 'mammoth';
-import path from 'path';
-import { DOCUMENT_FIELD_KEYS, DOCUMENT_FIELD_MAPPINGS, slugify } from './schema';
-import type { DocumentFields, DocumentFieldKey, FieldState, FieldStates } from './schema';
+import mammoth from "mammoth";
+import path from "path";
+import {
+  DOCUMENT_FIELD_KEYS,
+  DOCUMENT_FIELD_MAPPINGS,
+  slugify,
+} from "./schema";
+import type {
+  DocumentFields,
+  DocumentFieldKey,
+  FieldState,
+  FieldStates,
+} from "./schema";
 
 export interface ExtractedImage {
   index: number;
   altText: string;
   caption: string;
+  location: string;
+  relationshipId?: string;
   buffer: Buffer;
   contentType: string;
   filename: string;
@@ -40,14 +51,14 @@ export interface ExtractedDocument {
 export function isImagePlaceholder(text: string): boolean {
   const lower = text.toLowerCase().trim();
   return (
-    lower.startsWith('[optional cover photo') ||
-    lower.startsWith('[cover photo') ||
-    lower.startsWith('[optional cover image') ||
-    lower.startsWith('[cover image') ||
-    lower.startsWith('[optional image') ||
-    lower.startsWith('[image:') ||
-    lower.startsWith('[image_') ||
-    lower.startsWith('leave empty')
+    lower.startsWith("[optional cover photo") ||
+    lower.startsWith("[cover photo") ||
+    lower.startsWith("[optional cover image") ||
+    lower.startsWith("[cover image") ||
+    lower.startsWith("[optional image") ||
+    lower.startsWith("[image:") ||
+    lower.startsWith("[image_") ||
+    lower.startsWith("leave empty")
   );
 }
 
@@ -58,20 +69,20 @@ export function isImagePlaceholder(text: string): boolean {
 export function isTemplateArtifact(text: string): boolean {
   const lower = text.toLowerCase().trim();
   return (
-    lower === 'blog content entry template' ||
-    lower.includes('content entry template') ||
+    lower === "blog content entry template" ||
+    lower.includes("content entry template") ||
     lower.includes('fields marked "leave empty"') ||
-    lower.includes('sample values are provided') ||
-    lower === 'blog details' ||
-    lower === 'default seo' ||
-    lower === '5. default seo' ||
-    lower.startsWith('5. default seo') ||
-    lower === 'content & page components' ||
-    lower.startsWith('content & page components') ||
-    lower === '1. title' ||
-    lower === '2. description' ||
-    lower === '3. slug' ||
-    lower === '4. cover [image]'
+    lower.includes("sample values are provided") ||
+    lower === "blog details" ||
+    lower === "default seo" ||
+    lower === "5. default seo" ||
+    lower.startsWith("5. default seo") ||
+    lower === "content & page components" ||
+    lower.startsWith("content & page components") ||
+    lower === "1. title" ||
+    lower === "2. description" ||
+    lower === "3. slug" ||
+    lower === "4. cover [image]"
   );
 }
 
@@ -81,11 +92,11 @@ export function isTemplateArtifact(text: string): boolean {
  */
 export function normalizeKey(key: string): string {
   return key
-    .replace(/^\d+[\.\)]\s*/, '') // remove leading "1. " or "1) "
-    .replace(/\[.*?\]/g, '')     // remove "[Image]"
+    .replace(/^\d+[\.\)]\s*/, "") // remove leading "1. " or "1) "
+    .replace(/\[.*?\]/g, "") // remove "[Image]"
     .trim()
     .toLowerCase()
-    .replace(/[^a-z0-9]/g, '');  // remove spaces, colons, hyphens
+    .replace(/[^a-z0-9]/g, ""); // remove spaces, colons, hyphens
 }
 
 /**
@@ -96,16 +107,16 @@ export function normalizeValue(val: string): string | null {
   const trimmed = val.trim();
   const lower = trimmed.toLowerCase();
   if (
-    lower.startsWith('leave empty') ||
-    lower === '[leave empty]' ||
-    lower === 'empty' ||
-    lower === 'empty.' ||
-    lower === 'no provided value' ||
-    lower === 'no provided value.' ||
-    lower === 'not provided' ||
-    lower === 'n/a' ||
-    lower === 'none' ||
-    lower === '(none)'
+    lower.startsWith("leave empty") ||
+    lower === "[leave empty]" ||
+    lower === "empty" ||
+    lower === "empty." ||
+    lower === "no provided value" ||
+    lower === "no provided value." ||
+    lower === "not provided" ||
+    lower === "n/a" ||
+    lower === "none" ||
+    lower === "(none)"
   ) {
     return null;
   }
@@ -115,39 +126,41 @@ export function normalizeValue(val: string): string | null {
 /**
  * Try to parse a labeled line like "Author: John Doe" or "SEO Title - My Title".
  */
-export function parseLabeledField(text: string): { label: string; value: string } | null {
+export function parseLabeledField(
+  text: string,
+): { label: string; value: string } | null {
   const trimmed = text.trim();
   const match = trimmed.match(/^([A-Za-z0-9\s\.\[\]]+?)\s*([:—–-])\s*(.*)$/);
   if (!match) return null;
   const label = normalizeKey(match[1]);
-  if (match[2] !== ':' && !FIELD_ALIASES[label]) return null;
+  if (match[2] !== ":" && !FIELD_ALIASES[label]) return null;
   const value = match[3].trim();
   return { label, value };
 }
 
 const FIELD_ALIASES: Record<string, DocumentFieldKey> = Object.fromEntries(
   DOCUMENT_FIELD_MAPPINGS.flatMap(({ label, aliases = [], internalField }) =>
-    [label, ...aliases].map((alias) => [normalizeKey(alias), internalField])
-  )
+    [label, ...aliases].map((alias) => [normalizeKey(alias), internalField]),
+  ),
 );
 
 function initialFieldStates(): FieldStates {
   return Object.fromEntries(
-    DOCUMENT_FIELD_KEYS.map((key) => [key, { status: 'missing' as const }])
+    DOCUMENT_FIELD_KEYS.map((key) => [key, { status: "missing" as const }]),
   );
 }
 
 function classifyFieldValue(
   key: DocumentFieldKey,
-  rawValue: string
+  rawValue: string,
 ): { state: FieldState; value: string | null } {
   const value = rawValue.trim();
   const imageMatch = value.match(/^\[IMAGE_(\d+)\]$/i);
-  if (key === 'cover' && imageMatch) {
+  if (key === "cover" && imageMatch) {
     return {
       state: {
-        status: 'extracted',
-        reason: 'Image is explicitly placed in the Cover field.',
+        status: "extracted",
+        reason: "Image is explicitly placed in the Cover field.",
         rawValue: value,
         imageIndex: Number(imageMatch[1]),
       },
@@ -156,77 +169,146 @@ function classifyFieldValue(
   }
 
   if (!value) {
-    return { state: { status: 'explicitly_empty', rawValue }, value: null };
+    return { state: { status: "explicitly_empty", rawValue }, value: null };
   }
 
   const lower = value.toLowerCase();
-  if (/^(empty|no provided value|not provided|n\/a|none|\(none\)|\[leave empty\])\.?$/.test(lower)) {
-    return { state: { status: 'explicitly_empty', rawValue }, value: null };
+  if (
+    /^(empty|no provided value|not provided|n\/a|none|\(none\)|\[leave empty\])\.?$/.test(
+      lower,
+    )
+  ) {
+    return { state: { status: "explicitly_empty", rawValue }, value: null };
   }
   if (
-    lower.startsWith('leave empty') ||
-    lower.startsWith('select ') ||
-    lower.startsWith('add ') ||
-    lower.startsWith('connect ') ||
-    lower.startsWith('choose ') ||
-    lower.startsWith('[optional') ||
-    lower.startsWith('[cover') ||
-    lower.startsWith('[image')
+    lower.startsWith("leave empty") ||
+    lower.startsWith("select ") ||
+    lower.startsWith("add ") ||
+    lower.startsWith("connect ") ||
+    lower.startsWith("choose ") ||
+    lower.startsWith("[optional") ||
+    lower.startsWith("[cover") ||
+    lower.startsWith("[image")
   ) {
     return {
-      state: { status: 'unresolved', reason: 'Template instruction or placeholder, not a field value.', rawValue },
+      state: {
+        status: "unresolved",
+        reason: "Template instruction or placeholder, not a field value.",
+        rawValue,
+      },
       value: null,
     };
   }
 
-  if (key === 'cover' || key === 'defaultSeo.shareImage') {
+  if (key === "cover" || key === "defaultSeo.shareImage") {
     return {
-      state: { status: 'unresolved', reason: 'Media fields require an explicitly referenced embedded image or manual selection.', rawValue },
+      state: {
+        status: "unresolved",
+        reason:
+          "Media fields require an explicitly referenced embedded image or manual selection.",
+        rawValue,
+      },
       value: null,
     };
   }
-  if (key === 'blogcategories') {
+  if (key === "blogcategories") {
     return {
-      state: { status: 'unresolved', reason: 'Category text cannot safely resolve the current Article relation.', rawValue },
+      state: {
+        status: "unresolved",
+        reason:
+          "Category text cannot safely resolve the current Article relation.",
+        rawValue,
+      },
       value,
     };
   }
-  if (key === 'contentnew') {
+  if (key === "contentnew") {
     return {
-      state: { status: 'requires_review', reason: 'The target component expects structured Blocks content.', rawValue },
+      state: {
+        status: "requires_review",
+        reason: "The target component expects structured Blocks content.",
+        rawValue,
+      },
       value,
     };
   }
-  if (key === 'faqsection' || key === 'formsection' || key === 'popularityname') {
+  if (
+    key === "faqsection" ||
+    key === "formsection" ||
+    key === "popularityname"
+  ) {
     return {
-      state: { status: 'unresolved', reason: 'No matching attribute exists in the current Strapi Article schema.', rawValue },
+      state: {
+        status: "unresolved",
+        reason:
+          "No matching attribute exists in the current Strapi Article schema.",
+        rawValue,
+      },
       value,
     };
   }
-  if (key === 'date' && !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    return { state: { status: 'invalid', reason: 'Expected a date in YYYY-MM-DD format.', rawValue }, value };
+  if (key === "date" && !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return {
+      state: {
+        status: "invalid",
+        reason: "Expected a date in YYYY-MM-DD format.",
+        rawValue,
+      },
+      value,
+    };
   }
-  if (key === 'date') {
+  if (key === "date") {
     const date = new Date(`${value}T00:00:00.000Z`);
-    if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value) {
-      return { state: { status: 'invalid', reason: 'Date is not a valid calendar date.', rawValue }, value };
+    if (
+      Number.isNaN(date.getTime()) ||
+      date.toISOString().slice(0, 10) !== value
+    ) {
+      return {
+        state: {
+          status: "invalid",
+          reason: "Date is not a valid calendar date.",
+          rawValue,
+        },
+        value,
+      };
     }
   }
-  if (key === 'slug' && !slugify(value)) {
-    return { state: { status: 'invalid', reason: 'Slug contains no usable URL characters.', rawValue }, value };
+  if (key === "slug" && !slugify(value)) {
+    return {
+      state: {
+        status: "invalid",
+        reason: "Slug contains no usable URL characters.",
+        rawValue,
+      },
+      value,
+    };
   }
-  if (key === 'button' && !(/^https?:\/\/\S+$/i.test(value) || /^\/[^/\s][^\s]*$/.test(value) || /^#[^\s]+$/.test(value))) {
-    return { state: { status: 'requires_review', reason: 'Button value is not a verified URL/path for button.link.', rawValue }, value };
+  if (
+    key === "button" &&
+    !(
+      /^https?:\/\/\S+$/i.test(value) ||
+      /^\/[^/\s][^\s]*$/.test(value) ||
+      /^#[^\s]+$/.test(value)
+    )
+  ) {
+    return {
+      state: {
+        status: "requires_review",
+        reason: "Button value is not a verified URL/path for button.link.",
+        rawValue,
+      },
+      value,
+    };
   }
 
-  return { state: { status: 'extracted', rawValue }, value };
+  return { state: { status: "extracted", rawValue }, value };
 }
 
 function assignField(
   fields: Partial<DocumentFields>,
   states: FieldStates,
   label: string,
-  rawValue: string
+  rawValue: string,
 ): boolean {
   const key = FIELD_ALIASES[normalizeKey(label)];
   if (!key) return false;
@@ -235,12 +317,12 @@ function assignField(
   const existing = states[key];
   if (
     existing &&
-    existing.status !== 'missing' &&
+    existing.status !== "missing" &&
     existing.rawValue !== undefined &&
     existing.rawValue !== rawValue.trim()
   ) {
     states[key] = {
-      status: 'requires_review',
+      status: "requires_review",
       reason: `Conflicting duplicate values for "${label}".`,
       rawValue: `${existing.rawValue}\n${rawValue.trim()}`,
     };
@@ -249,12 +331,17 @@ function assignField(
   states[key] = classified.state;
 
   const value = classified.value;
-  if (key.startsWith('defaultSeo.')) {
-    const seoKey = key.slice('defaultSeo.'.length) as keyof NonNullable<DocumentFields['defaultSeo']>;
+  if (key.startsWith("defaultSeo.")) {
+    const seoKey = key.slice("defaultSeo.".length) as keyof NonNullable<
+      DocumentFields["defaultSeo"]
+    >;
     const seo = fields.defaultSeo ?? {};
-    if (seoKey === 'keywords') {
+    if (seoKey === "keywords") {
       seo.keywords = value
-        ? value.split(/[,;]\s*/).map((part) => part.trim()).filter(Boolean)
+        ? value
+            .split(/[,;]\s*/)
+            .map((part) => part.trim())
+            .filter(Boolean)
         : [];
     } else {
       seo[seoKey] = value;
@@ -264,27 +351,63 @@ function assignField(
   }
 
   switch (key) {
-    case 'title': fields.title = value; break;
-    case 'description': fields.description = value; break;
-    case 'slug': fields.slug = value; break;
-    case 'cover': fields.cover = value; break;
-    case 'content': fields.content = value; break;
-    case 'date': fields.date = value; break;
-    case 'authordata': fields.authordata = value; break;
-    case 'categoryname': fields.categoryname = value; break;
-    case 'contentnew': fields.contentnew = value; break;
-    case 'button': fields.button = value; break;
-    case 'buttontitle': fields.buttontitle = value; break;
-    case 'buttonsubtitle': fields.buttonsubtitle = value; break;
-    case 'blogcategories':
-      fields.blogcategories = value && value.includes(',')
-        ? value.split(',').map((part) => part.trim()).filter(Boolean)
-        : value;
+    case "title":
+      fields.title = value;
       break;
-    case 'time': fields.time = value; break;
-    case 'faqsection': fields.faqsection = value; break;
-    case 'formsection': fields.formsection = value; break;
-    case 'popularityname': fields.popularityname = value; break;
+    case "description":
+      fields.description = value;
+      break;
+    case "slug":
+      fields.slug = value;
+      break;
+    case "cover":
+      fields.cover = value;
+      break;
+    case "content":
+      fields.content = value;
+      break;
+    case "date":
+      fields.date = value;
+      break;
+    case "authordata":
+      fields.authordata = value;
+      break;
+    case "categoryname":
+      fields.categoryname = value;
+      break;
+    case "contentnew":
+      fields.contentnew = value;
+      break;
+    case "button":
+      fields.button = value;
+      break;
+    case "buttontitle":
+      fields.buttontitle = value;
+      break;
+    case "buttonsubtitle":
+      fields.buttonsubtitle = value;
+      break;
+    case "blogcategories":
+      fields.blogcategories =
+        value && value.includes(",")
+          ? value
+              .split(",")
+              .map((part) => part.trim())
+              .filter(Boolean)
+          : value;
+      break;
+    case "time":
+      fields.time = value;
+      break;
+    case "faqsection":
+      fields.faqsection = value;
+      break;
+    case "formsection":
+      fields.formsection = value;
+      break;
+    case "popularityname":
+      fields.popularityname = value;
+      break;
   }
   return true;
 }
@@ -315,7 +438,7 @@ function parseTables(html: string): Array<{ key: string; value: string }> {
       if (cells.length >= 2) {
         const key = cells[0];
         // If there are more than 2 cells, join remaining as value
-        const value = cells.slice(1).join(' ').trim();
+        const value = cells.slice(1).join(" ").trim();
         if (key) {
           pairs.push({ key, value });
         }
@@ -333,7 +456,7 @@ function parseTables(html: string): Array<{ key: string; value: string }> {
  */
 export async function extractDocx(
   buffer: Buffer,
-  filename: string
+  filename: string,
 ): Promise<ExtractedDocument> {
   let imageCounter = 0;
   const images: ExtractedImage[] = [];
@@ -343,22 +466,30 @@ export async function extractDocx(
     {
       convertImage: (mammoth.images as any).inline(async (element: any) => {
         const imgBuffer = Buffer.from(await element.read());
-        const ext = element.contentType.split('/')[1] || 'png';
+        const ext = element.contentType.split("/")[1] || "png";
         const idx = imageCounter++;
         images.push({
           index: idx,
-          altText: `Image ${idx + 1}`,
-          caption: '',
+          altText:
+            typeof element.altText === "string" && element.altText.trim()
+              ? element.altText.trim()
+              : `Image ${idx + 1}`,
+          caption: "",
+          location: "Document",
+          ...(typeof element.relationshipId === "string"
+            ? { relationshipId: element.relationshipId }
+            : {}),
           buffer: imgBuffer,
           contentType: element.contentType,
           filename: `image_${idx + 1}.${ext}`,
         });
         return { src: `[IMAGE_${idx}]` };
       }),
-    }
+    },
   );
 
   const html = result.value;
+  annotateImageLocations(html, images);
 
   const parsedFields: Partial<DocumentFields> = {};
   const fieldStates = initialFieldStates();
@@ -372,13 +503,13 @@ export async function extractDocx(
     }
   }
   // Step 2: Strip <table>...</table> from HTML so table contents don't pollute paragraph stream
-  const htmlWithoutTables = html.replace(/<table[^>]*>.*?<\/table>/gis, ' ');
+  const htmlWithoutTables = html.replace(/<table[^>]*>.*?<\/table>/gis, " ");
 
   // Step 3: Parse remaining elements in document order
   type DocElement =
-    | { type: 'heading'; level: number; text: string }
-    | { type: 'paragraph'; text: string }
-    | { type: 'list'; items: string[] };
+    | { type: "heading"; level: number; text: string }
+    | { type: "paragraph"; text: string }
+    | { type: "list"; items: string[] };
 
   const headings: Array<{ level: number; text: string }> = [];
   const paragraphs: string[] = [];
@@ -392,20 +523,23 @@ export async function extractDocx(
     const tag = match[1].toLowerCase();
     const innerHtml = match[2];
 
-    if (tag.startsWith('h')) {
+    if (tag.startsWith("h")) {
       const level = parseInt(tag.substring(1), 10);
       const text = stripHtml(innerHtml);
       if (text) {
         headings.push({ level, text });
-        elements.push({ type: 'heading', level, text });
+        elements.push({ type: "heading", level, text });
       }
-    } else if (tag === 'p') {
+    } else if (tag === "p") {
       const text = stripHtml(innerHtml);
-      if (text && !text.startsWith('[IMAGE_')) {
+      if (
+        text &&
+        (!text.startsWith("[IMAGE_") || /^\[IMAGE_\d+\]$/i.test(text))
+      ) {
         paragraphs.push(text);
-        elements.push({ type: 'paragraph', text });
+        elements.push({ type: "paragraph", text });
       }
-    } else if (tag === 'ul' || tag === 'ol') {
+    } else if (tag === "ul" || tag === "ol") {
       const items: string[] = [];
       const liRegex = /<li[^>]*>(.*?)<\/li>/gis;
       let liMatch: RegExpExecArray | null;
@@ -415,14 +549,15 @@ export async function extractDocx(
       }
       if (items.length > 0) {
         lists.push(items);
-        elements.push({ type: 'list', items });
+        elements.push({ type: "list", items });
       }
     }
   }
 
   // Step 4: Parse non-table elements and filter template artifacts
   const usedElementIndices = new Set<number>();
-  let currentMetadataSection: 'faq' | 'author' | 'seo' | 'form' | 'button' | null = null;
+  let currentMetadataSection:
+    "faq" | "author" | "seo" | "form" | "button" | null = null;
   const faqItems: string[] = [];
   const formItems: string[] = [];
   const authorItems: string[] = [];
@@ -432,7 +567,7 @@ export async function extractDocx(
   for (let i = 0; i < elements.length; i++) {
     if (usedElementIndices.has(i)) continue;
     const elem = elements[i];
-    const elemText = elem.type === 'list' ? elem.items.join(' ') : elem.text;
+    const elemText = elem.type === "list" ? elem.items.join(" ") : elem.text;
 
     // Filter out known template instructions and headers (e.g. "Blog Content Entry Template", "Blog Details", "5. Default SEO")
     if (isTemplateArtifact(elemText)) {
@@ -440,26 +575,47 @@ export async function extractDocx(
       continue;
     }
 
-    if (elem.type === 'heading') {
+    if (elem.type === "heading") {
       const lower = elem.text.toLowerCase().trim();
-      if (lower === 'faq' || lower === 'frequently asked questions' || lower.startsWith('faq:')) {
-        currentMetadataSection = 'faq';
+      if (
+        lower === "faq" ||
+        lower === "frequently asked questions" ||
+        lower.startsWith("faq:")
+      ) {
+        currentMetadataSection = "faq";
         usedElementIndices.add(i);
         continue;
-      } else if (lower === 'author' || lower === 'author data' || lower === 'about the author') {
-        currentMetadataSection = 'author';
+      } else if (
+        lower === "author" ||
+        lower === "author data" ||
+        lower === "about the author"
+      ) {
+        currentMetadataSection = "author";
         usedElementIndices.add(i);
         continue;
-      } else if (lower === 'seo' || lower === 'seo metadata' || lower === 'default seo' || lower === 'metadata') {
-        currentMetadataSection = 'seo';
+      } else if (
+        lower === "seo" ||
+        lower === "seo metadata" ||
+        lower === "default seo" ||
+        lower === "metadata"
+      ) {
+        currentMetadataSection = "seo";
         usedElementIndices.add(i);
         continue;
-      } else if (lower === 'form' || lower === 'form section' || lower === 'form configuration') {
-        currentMetadataSection = 'form';
+      } else if (
+        lower === "form" ||
+        lower === "form section" ||
+        lower === "form configuration"
+      ) {
+        currentMetadataSection = "form";
         usedElementIndices.add(i);
         continue;
-      } else if (lower === 'buttons' || lower === 'button' || lower === 'call to action') {
-        currentMetadataSection = 'button';
+      } else if (
+        lower === "buttons" ||
+        lower === "button" ||
+        lower === "call to action"
+      ) {
+        currentMetadataSection = "button";
         usedElementIndices.add(i);
         continue;
       } else {
@@ -467,23 +623,41 @@ export async function extractDocx(
       }
     }
 
-    if (elem.type === 'paragraph') {
+    if (elem.type === "paragraph") {
       const labeled = parseLabeledField(elem.text);
-      if (labeled && assignField(parsedFields, fieldStates, labeled.label, labeled.value)) {
+      const next = elements[i + 1];
+      if (
+        labeled &&
+        !labeled.value &&
+        next?.type === "paragraph" &&
+        /^\[IMAGE_\d+\]$/i.test(next.text)
+      ) {
+        assignField(parsedFields, fieldStates, labeled.label, next.text);
+        usedElementIndices.add(i);
+        usedElementIndices.add(i + 1);
+        continue;
+      }
+      if (
+        labeled &&
+        assignField(parsedFields, fieldStates, labeled.label, labeled.value)
+      ) {
         usedElementIndices.add(i);
         continue;
       }
     }
 
-    if ((elem.type === 'heading' || elem.type === 'paragraph') && FIELD_ALIASES[normalizeKey(elemText)]) {
+    if (
+      (elem.type === "heading" || elem.type === "paragraph") &&
+      FIELD_ALIASES[normalizeKey(elemText)]
+    ) {
       const next = elements[i + 1];
-      if (next && next.type !== 'heading') {
-        const value = next.type === 'list' ? next.items.join('\n') : next.text;
+      if (next && next.type !== "heading") {
+        const value = next.type === "list" ? next.items.join("\n") : next.text;
         assignField(parsedFields, fieldStates, elemText, value);
         usedElementIndices.add(i);
         usedElementIndices.add(i + 1);
       } else {
-        assignField(parsedFields, fieldStates, elemText, '');
+        assignField(parsedFields, fieldStates, elemText, "");
         usedElementIndices.add(i);
       }
       continue;
@@ -491,53 +665,70 @@ export async function extractDocx(
 
     if (currentMetadataSection) {
       usedElementIndices.add(i);
-      const textContent = elem.type === 'list' ? elem.items.join('\n') : elem.text;
-      if (currentMetadataSection === 'faq') faqItems.push(textContent);
-      else if (currentMetadataSection === 'author') authorItems.push(textContent);
-      else if (currentMetadataSection === 'seo') seoItems.push(textContent);
-      else if (currentMetadataSection === 'form') formItems.push(textContent);
-      else if (currentMetadataSection === 'button') buttonItems.push(textContent);
+      const textContent =
+        elem.type === "list" ? elem.items.join("\n") : elem.text;
+      if (currentMetadataSection === "faq") faqItems.push(textContent);
+      else if (currentMetadataSection === "author")
+        authorItems.push(textContent);
+      else if (currentMetadataSection === "seo") seoItems.push(textContent);
+      else if (currentMetadataSection === "form") formItems.push(textContent);
+      else if (currentMetadataSection === "button")
+        buttonItems.push(textContent);
       continue;
     }
 
     // Check for image placeholder
-    if (elem.type === 'paragraph' && isImagePlaceholder(elem.text)) {
+    if (elem.type === "paragraph" && isImagePlaceholder(elem.text)) {
       usedElementIndices.add(i);
-      assignField(parsedFields, fieldStates, 'cover', elem.text);
+      assignField(parsedFields, fieldStates, "cover", elem.text);
       continue;
     }
 
-    if (elem.type === 'paragraph') {
+    if (elem.type === "paragraph") {
+      if (/^\[IMAGE_\d+\]$/i.test(elem.text)) {
+        usedElementIndices.add(i);
+        continue;
+      }
       const labeled = parseLabeledField(elem.text);
       if (labeled && labeled.value) unmappedFields.push(labeled);
     }
   }
 
-  if (faqItems.length && fieldStates.faqsection.status === 'missing') {
-    assignField(parsedFields, fieldStates, 'faqsection', faqItems.join('\n\n'));
+  if (faqItems.length && fieldStates.faqsection.status === "missing") {
+    assignField(parsedFields, fieldStates, "faqsection", faqItems.join("\n\n"));
   }
-  if (formItems.length && fieldStates.formsection.status === 'missing') {
-    assignField(parsedFields, fieldStates, 'formsection', formItems.join('\n\n'));
+  if (formItems.length && fieldStates.formsection.status === "missing") {
+    assignField(
+      parsedFields,
+      fieldStates,
+      "formsection",
+      formItems.join("\n\n"),
+    );
   }
-  if (authorItems.length && fieldStates.authordata.status === 'missing') {
-    assignField(parsedFields, fieldStates, 'authordata', authorItems.join('\n'));
+  if (authorItems.length && fieldStates.authordata.status === "missing") {
+    assignField(
+      parsedFields,
+      fieldStates,
+      "authordata",
+      authorItems.join("\n"),
+    );
   }
-  if (buttonItems.length && fieldStates.button.status === 'missing') {
-    assignField(parsedFields, fieldStates, 'button', buttonItems.join('\n'));
+  if (buttonItems.length && fieldStates.button.status === "missing") {
+    assignField(parsedFields, fieldStates, "button", buttonItems.join("\n"));
   }
   if (seoItems.length) {
-    unmappedFields.push({ label: 'SEO section', value: seoItems.join('\n\n') });
+    unmappedFields.push({ label: "SEO section", value: seoItems.join("\n\n") });
   }
 
   // Step 5: Resolve Title (if not already found in table or label)
   let title = parsedFields.title ?? null;
   let titleElemIndex = -1;
 
-  if (!title && fieldStates.title.status === 'missing') {
+  if (!title && fieldStates.title.status === "missing") {
     for (let i = 0; i < elements.length; i++) {
       const elem = elements[i];
       if (
-        elem.type === 'heading' &&
+        elem.type === "heading" &&
         elem.level === 1 &&
         !usedElementIndices.has(i) &&
         !isTemplateArtifact(elem.text)
@@ -549,11 +740,11 @@ export async function extractDocx(
       }
     }
 
-    if (!title && fieldStates.title.status === 'missing') {
+    if (!title && fieldStates.title.status === "missing") {
       for (let i = 0; i < elements.length; i++) {
         const elem = elements[i];
         if (
-          elem.type === 'heading' &&
+          elem.type === "heading" &&
           !usedElementIndices.has(i) &&
           !isTemplateArtifact(elem.text)
         ) {
@@ -565,11 +756,11 @@ export async function extractDocx(
       }
     }
 
-    if (!title && fieldStates.title.status === 'missing') {
+    if (!title && fieldStates.title.status === "missing") {
       for (let i = 0; i < elements.length; i++) {
         const elem = elements[i];
         if (
-          elem.type === 'paragraph' &&
+          elem.type === "paragraph" &&
           !usedElementIndices.has(i) &&
           !isTemplateArtifact(elem.text)
         ) {
@@ -582,18 +773,22 @@ export async function extractDocx(
     }
   }
   parsedFields.title = title;
-  if (title && fieldStates.title.status === 'missing') {
-    fieldStates.title = { status: 'extracted', reason: 'Inferred from the document heading.', rawValue: title };
+  if (title && fieldStates.title.status === "missing") {
+    fieldStates.title = {
+      status: "extracted",
+      reason: "Inferred from the document heading.",
+      rawValue: title,
+    };
   }
 
   // Step 6: Resolve Description (if not already found in table or label)
   let description = parsedFields.description ?? null;
-  if (!description && fieldStates.description.status === 'missing') {
+  if (!description && fieldStates.description.status === "missing") {
     for (let i = 0; i < elements.length; i++) {
       if (i <= titleElemIndex) continue;
       const elem = elements[i];
       if (
-        elem.type === 'paragraph' &&
+        elem.type === "paragraph" &&
         !usedElementIndices.has(i) &&
         !isTemplateArtifact(elem.text)
       ) {
@@ -604,8 +799,12 @@ export async function extractDocx(
     }
   }
   parsedFields.description = description;
-  if (description && fieldStates.description.status === 'missing') {
-    fieldStates.description = { status: 'extracted', reason: 'Inferred from the first remaining paragraph.', rawValue: description };
+  if (description && fieldStates.description.status === "missing") {
+    fieldStates.description = {
+      status: "extracted",
+      reason: "Inferred from the first remaining paragraph.",
+      rawValue: description,
+    };
   }
 
   // Step 7: Resolve Content (main body ONLY)
@@ -613,34 +812,41 @@ export async function extractDocx(
   let content = parsedFields.content ?? null;
 
   // Otherwise, collect remaining non-metadata, non-template elements
-  if (!content && fieldStates.content.status === 'missing') {
+  if (!content && fieldStates.content.status === "missing") {
     const contentParts: string[] = [];
     for (let i = 0; i < elements.length; i++) {
       if (usedElementIndices.has(i)) continue;
 
       const elem = elements[i];
-      if (elem.type === 'heading') {
-        const prefix = '#'.repeat(elem.level);
+      if (elem.type === "heading") {
+        const prefix = "#".repeat(elem.level);
         contentParts.push(`${prefix} ${elem.text}`);
-      } else if (elem.type === 'paragraph') {
+      } else if (elem.type === "paragraph") {
         contentParts.push(elem.text);
-      } else if (elem.type === 'list') {
+      } else if (elem.type === "list") {
         for (const item of elem.items) {
           contentParts.push(`- ${item}`);
         }
       }
     }
-    content = contentParts.length > 0 ? contentParts.join('\n\n') : null;
+    content = contentParts.length > 0 ? contentParts.join("\n\n") : null;
   }
   parsedFields.content = content;
-  if (content && fieldStates.content.status === 'missing') {
-    fieldStates.content = { status: 'extracted', reason: 'Preserved from remaining document body content.', rawValue: content };
+  if (content && fieldStates.content.status === "missing") {
+    fieldStates.content = {
+      status: "extracted",
+      reason: "Preserved from remaining document body content.",
+      rawValue: content,
+    };
   }
 
   const referencedCoverIndex = fieldStates.cover.imageIndex;
-  if (referencedCoverIndex !== undefined && !images.some((image) => image.index === referencedCoverIndex)) {
+  if (
+    referencedCoverIndex !== undefined &&
+    !images.some((image) => image.index === referencedCoverIndex)
+  ) {
     fieldStates.cover = {
-      status: 'invalid',
+      status: "invalid",
       reason: `Cover references embedded image ${referencedCoverIndex}, which was not extracted.`,
       rawValue: fieldStates.cover.rawValue,
     };
@@ -680,30 +886,76 @@ function stripHtml(html: string): string {
       return /^(https?:\/\/|mailto:|\/|#)/i.test(linkTarget)
         ? `[${linkText}](${linkTarget})`
         : linkText;
-    }
+    },
   );
   return withLinks
-    .replace(/<(strong|b)\b[^>]*>/gi, '**')
-    .replace(/<\/(strong|b)>/gi, '**')
-    .replace(/<(em|i)\b[^>]*>/gi, '*')
-    .replace(/<\/(em|i)>/gi, '*')
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
+    .replace(/<img\b[^>]*src=["'](\[IMAGE_\d+\])["'][^>]*>/gi, " $1 ")
+    .replace(/<(strong|b)\b[^>]*>/gi, "**")
+    .replace(/<\/(strong|b)>/gi, "**")
+    .replace(/<(em|i)\b[^>]*>/gi, "*")
+    .replace(/<\/(em|i)>/gi, "*")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
-    .replace(/&nbsp;/g, ' ')
-    .replace(/\s{2,}/g, ' ')
+    .replace(/&nbsp;/g, " ")
+    .replace(/\s{2,}/g, " ")
     .trim();
+}
+
+function annotateImageLocations(html: string, images: ExtractedImage[]): void {
+  const imageTag = /<img\b[^>]*src=["']\[IMAGE_(\d+)\]["'][^>]*>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = imageTag.exec(html)) !== null) {
+    const image = images[Number(match[1])];
+    if (!image) continue;
+
+    const before = html.slice(0, match.index);
+    const paragraphStart = before.lastIndexOf("<p");
+    const rowStart = before.lastIndexOf("<tr");
+    const rowEnd = rowStart >= 0 ? html.indexOf("</tr>", match.index) : -1;
+    const hasTableRow = rowStart >= 0 && rowEnd >= match.index;
+    const start = hasTableRow
+      ? rowStart
+      : Math.max(paragraphStart, before.lastIndexOf("<h"));
+    const end = hasTableRow
+      ? rowEnd + "</tr>".length
+      : (() => {
+          const after = html.slice(match.index + match[0].length);
+          const elementEnd = after.search(/<\/(?:p|h[1-6])>/i);
+          return (
+            match.index + match[0].length + (elementEnd >= 0 ? elementEnd : 0)
+          );
+        })();
+    const context = start >= 0 ? html.slice(start, end) : match[0];
+    const nearbyText = stripHtml(context)
+      .replace(/\[IMAGE_\d+\]/gi, "")
+      .trim();
+    const previousElement = before
+      .match(/<(?:p|h[1-6])\b[^>]*>[\s\S]*?<\/(?:p|h[1-6])>/gi)
+      ?.at(-1);
+    const contextText =
+      nearbyText || (previousElement ? stripHtml(previousElement).trim() : "");
+    const location = hasTableRow
+      ? `Table row ${(html.slice(0, rowStart).match(/<tr\b/gi)?.length ?? 0) + 1}`
+      : paragraphStart >= 0
+        ? `Paragraph ${html.slice(0, paragraphStart).match(/<p\b/gi)?.length ?? 1}`
+        : "Document";
+    image.location = contextText
+      ? `${location}: ${contextText.substring(0, 120)}`
+      : location;
+    if (contextText) image.caption = contextText.substring(0, 250);
+  }
 }
 
 function decodeHtmlEntities(value: string): string {
   return value
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'");
 }

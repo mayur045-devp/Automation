@@ -105,7 +105,11 @@ export interface SeoSeo extends Struct.ComponentSchema {
     >;
     metaTitle: Schema.Attribute.String;
     metaViewport: Schema.Attribute.String;
-    structuredData: Schema.Attribute.String;
+    shareImage: Schema.Attribute.Media<
+      'images' | 'files' | 'videos' | 'audios',
+      true
+    >;
+    structureData: Schema.Attribute.String;
   };
 }
 

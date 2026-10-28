@@ -31,13 +31,13 @@
         "audios"
       ]
     },
+    "structureData": {
+      "type": "string"
+    },
     "keywords": {
       "type": "text"
     },
     "metaRobots": {
-      "type": "string"
-    },
-    "structuredData": {
       "type": "string"
     },
     "metaViewport": {
@@ -45,6 +45,16 @@
     },
     "canonicalURL": {
       "type": "string"
+    },
+    "shareImage": {
+      "type": "media",
+      "multiple": true,
+      "allowedTypes": [
+        "images",
+        "files",
+        "videos",
+        "audios"
+      ]
     }
   },
   "config": {}

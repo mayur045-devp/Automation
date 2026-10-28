@@ -1,0 +1,14 @@
+{
+  "kind": "collectionType",
+  "collectionName": "sohams",
+  "info": {
+    "singularName": "soham",
+    "pluralName": "sohams",
+    "displayName": "Soham"
+  },
+  "options": {
+    "draftAndPublish": true
+  },
+  "pluginOptions": {},
+  "attributes": {}
+}

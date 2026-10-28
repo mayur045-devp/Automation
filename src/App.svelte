@@ -9,6 +9,9 @@
   let activeTab = 'explorer' // 'explorer' | 'import'
 
   const GRAPHQL_URL = import.meta.env.VITE_STRAPI_GRAPHQL_URL || 'http://localhost:1337/graphql'
+  const GRAPHQL_ORIGIN = (() => {
+    try { return new URL(GRAPHQL_URL).origin } catch { return '' }
+  })()
 
   // Connection state
   let connectionStatus = 'idle'   // idle | loading | connected | error
@@ -16,8 +19,10 @@
   let schemaFields = []
   let connectError = null
   let hasConnected = false
+  let connectionVersion = 0
 
   async function connect() {
+    connectionVersion += 1
     connectionStatus = 'loading'
     connectError = null
     responseTime = null
@@ -119,7 +124,12 @@
   <main class="mx-auto px-6 py-10 flex flex-col gap-8" style="max-width: 1200px;">
 
   {#if activeTab === 'import'}
-    <ImportPage />
+    <ImportPage
+      {connectionStatus}
+      connectionOrigin={GRAPHQL_ORIGIN}
+      {connectionVersion}
+      reconnect={connect}
+    />
   {:else}
 
     <!-- Hero -->
