@@ -4,23 +4,17 @@
 
 The Word Import workflow uses the authenticated Strapi Content-Type Builder API to discover all user-defined collection types and single types. GraphQL introspection does not filter this list. `STRAPI_IMPORT_COLLECTIONS` may restrict discovered UIDs. If authorized discovery is unavailable, the service reports the limitation and falls back to the static Article/Blog registry; that fallback cannot include newly created content types.
 
-`GET /api/import/collections` requires a `connectionOrigin` that matches the configured `STRAPI_URL` origin. `POST /api/import/collections/refresh` re-fetches authorized live metadata and replaces the cache. Content-Type Builder access requires a server-side `STRAPI_ADMIN_JWT` with the relevant read permission. GraphQL introspection does not prove create permission: Strapi enforces the service token's actual permissions on each REST operation. The uploader does not accept a browser-provided URL or token.
+`GET /api/import/collections` requires a `connectionOrigin` that matches the configured `STRAPI_URL` origin. `POST /api/import/collections/refresh` re-fetches authorized content-type and component metadata and replaces the cache. Discovery requires a server-side `STRAPI_ADMIN_JWT` with read permission. The token is used only to read schemas; schema creation and update routes are disabled. The uploader does not accept a browser-provided URL or token.
 
-Preview requests pass `collectionId` and `connectionOrigin` with the DOCX. The service resolves the target from current live metadata or its static fallback, maps only supported fields for that target, validates the payload against the target schema, and stores the trusted target identity with the preview. Confirm re-resolves the target, rechecks the connection origin and payload, checks the configured duplicate identifier, creates a draft at the target-derived REST route, and verifies the created entry. Unknown fields from AI output are ignored and reported. Relations and unsupported components are not guessed.
+Preview requests pass `collectionId` and `connectionOrigin` with the DOCX. The service resolves the target from current live metadata or its verified static fallback, recursively discovers component attributes, maps only fields in that target schema, validates the final payload, and stores the trusted target identity with the preview. Confirm re-resolves the target, rechecks the connection origin and payload, checks the configured duplicate identifier, creates a draft at the target-derived REST route, and verifies the created entry. Extra document content is ignored. Optional missing fields are omitted. Relations are never guessed from display text.
 
-The schema-aware generic mapper compares extracted fields with the selected live schema and classifies compatible, missing, conflicting, and unsupported fields. Simple scalar additions and explicitly inferred image fields can be reviewed and approved individually. The Content-Type Builder update route is development-only in supported Strapi setups and requires authorized admin access; production deployments that do not expose this route must add fields through Strapi's supported project schema workflow, then refresh and re-analyze. Existing fields are never replaced or removed. Components, dynamic zones, relations, localization, and uncertain nested structures require manual configuration.
+Only the selected collection schema controls payload field names, types, enum values, required checks, and component structure. Unsupported optional content is omitted; invalid values and unmet required constraints produce explicit validation errors. The service never creates or modifies Strapi schemas.
 
 ## What changed
 
-The previous preview exposed a Strapi payload limited to `Title`, `slug`, `description`, and `content`. The extraction layer already recognized some extra labels, but the payload builder discarded them. The updated preview separates:
+The preview displays only values in the normalized payload that will be sent to Strapi, with component values rendered as destination field paths. Technical payload and extraction diagnostics are available only in the collapsed debug panel.
 
-- `fields`: recognized document values, including nested `defaultSeo` and non-CMS fields.
-- `fieldStates`: one extraction status per known document field (`extracted`, `explicitly_empty`, `missing`, `unresolved`, `requires_review`, or `invalid`), plus `uploadStatus` (`ready`, `manual`, `unsupported`, `not_ready`, or `blocked`), with a reason and original value when available.
-- `unmappedFields`: unknown labels and values retained for review.
-- `payload`: only verified, valid Strapi Article attributes.
-- `missingFields`, `ambiguities`, and `warnings`: extraction and mapping diagnostics.
-
-The preview UI displays all extracted fields and states in addition to the resulting payload. The `confirm` route remains create-only and creates drafts; an existing title match returns a conflict instead of updating an entry.
+The `confirm` route remains create-only and creates drafts; an existing matching entry returns a conflict instead of updating it.
 
 ## Verified field mapping
 
@@ -44,7 +38,7 @@ The mappings below use the current `my-strapi/src/api/article/content-types/arti
 | Date | `date` | `date` | Accept only a real `YYYY-MM-DD` date |
 | Authordata | `authordata` | `Authordata.authorName` | Map a provided author name to the component; no relation or media identifier is inferred |
 | Category Name | `categoryname` | `categoryName` (string) | Map as a scalar |
-| Content New | DOCX sections | `contentNew` (repeatable `component.content-new`) | One ordered component per detected section; Blocks for rich text and `contentHtml` for ordered table-capable HTML |
+| Content New | DOCX sections | `contentNew` (repeatable `component.content-new`) | One ordered `{ title, content }` text component per detected section; tables are represented as readable rows |
 | Button | `button` | `button.link` | Map only URL/path-shaped values |
 | Button Title | `buttontitle` | `buttontitle` (string) | Map as a scalar |
 | Button Subtitle | `buttonsubtitle` | `buttonsubtitle` (string) | Map as a scalar |
@@ -54,17 +48,17 @@ The mappings below use the current `my-strapi/src/api/article/content-types/arti
 | Form Section | `formsection` | No attribute in current Article schema | Retain for review; exclude from CMS payload |
 | Popularity Name | `popularityname` | No attribute in current Article schema | Retain for review; exclude from CMS payload |
 
-These are explicit mappings, not automatic camel-case conversions. The Strapi schema currently contains no declared required attributes, so the import does not invent or enforce additional required values.
+These mappings illustrate the checked-in Article fallback only. Live collections use their discovered schema, including actual required and enum constraints. No missing value is invented.
 
-## Structured sections, Blocks, and tables
+## Structured sections and tables
 
-The DOCX converter uses Mammoth's semantic HTML output to preserve document order, paragraphs, headings, lists, links, and actual table rows/cells. Section boundaries are recognized from Word heading styles, standalone bold paragraphs, and Markdown heading markers; section titles are not hardcoded. Each section becomes one item in the repeatable `contentNew` component array.
+The DOCX converter uses Mammoth's semantic output and document structure to preserve order, paragraphs, headings, lists, hyperlinks, and table rows/cells. Section boundaries are recognized from Word heading styles, standalone bold paragraphs, and Markdown heading markers; section titles are not hardcoded. Each section becomes one item in the repeatable `contentNew` component array when the selected schema exposes compatible `title` and `content` fields.
 
-`contentNew.content` remains a Strapi Blocks field. Paragraphs, headings, lists, supported inline formatting, and safe hyperlinks are serialized as Strapi Blocks nodes and validated before the REST request. Blocks has no table node, so an optional additive `contentHtml` text attribute stores the section's complete ordered HTML (including paragraphs around one or more semantic `<table>` elements). Existing `content` data is not changed. The import preview and reusable `ContentNewRenderer.svelte` sanitize HTML against an explicit tag/attribute/URL allowlist; tables scroll horizontally on narrow screens.
+For the checked-in component, `contentNew.content` is a Strapi text field. The importer sends a readable text representation with paragraph breaks, Markdown-style inline formatting and links, list markers, and pipe-separated table rows. It never sends `contentHtml` or unsupported component keys.
 
-The expected REST payload remains Strapi 5's `{ "data": { ... } }` envelope, with `contentNew: [{ "title": "...", "content": [...], "contentHtml": "..." }]`. Component mapping is enabled only for the verified `component.content-new` UID when the parent attribute is repeatable. A collection without that exact schema displays detected sections as unmapped and cannot be imported until they are mapped. Confirm re-fetches the created entry with the component populated and compares the saved component values with the approved preview.
+The expected REST payload remains Strapi 5's `{ "data": { ... } }` envelope, with `contentNew: [{ "title": "...", "content": "..." }]`. A collection without a compatible repeatable section component simply omits that content; it is not blocked for lacking an optional destination. Confirm re-fetches the created entry with components populated and compares saved values with the approved preview.
 
-The repository contains the import dashboard and a reusable renderer, but no public-site content page or CMS-backed route. A production website must consume `contentHtml` through the renderer (or an equivalent sanitized renderer) to display these tables. The local schema file and generated type were updated only after explicit approval; no live CMS write or migration was performed. Restart Strapi and verify the component schema before importing.
+The importer performs no schema writes or CMS writes during preview. Import confirmation is the only content-creation operation.
 
 ## Preview request and response
 
@@ -76,67 +70,30 @@ Example response (values shortened):
 {
   "importId": "generated-import-id",
   "preview": {
-    "fields": {
-      "title": "How AI Is Transforming Digital Business",
-      "description": "Explore how businesses use AI...",
-      "defaultSeo": {
-        "metaTitle": "How AI Is Transforming Digital Business | 12th Wonder",
-        "keywords": []
-      },
-      "date": "2026-10-26",
-      "categoryname": "Digital Transformation"
-    },
-    "fieldStates": {
-      "title": { "status": "extracted", "uploadStatus": "ready" },
-      "defaultSeo.keywords": { "status": "explicitly_empty", "uploadStatus": "not_ready" },
-      "cover": {
-        "status": "unresolved",
-        "uploadStatus": "manual",
-        "reason": "Template instruction or placeholder, not a field value."
-      },
-      "faqsection": {
-        "status": "unresolved",
-        "uploadStatus": "unsupported",
-        "reason": "No matching attribute exists in the current Strapi Article schema."
-      }
-    },
+    "collection": { "displayName": "Articles", "apiName": "articles" },
+    "documentName": "article.docx",
     "payload": {
       "Title": "How AI Is Transforming Digital Business",
       "slug": "how-ai-is-transforming-digital-business",
       "description": "Explore how businesses use AI...",
-      "date": "2026-10-26",
-      "categoryName": "Digital Transformation",
-      "seo": {
-        "metaTitle": "How AI Is Transforming Digital Business | 12th Wonder"
-      }
+      "contentNew": [
+        { "title": "Introduction", "content": "The complete section text..." }
+      ]
     },
-    "missingFields": [],
-    "unmappedFields": [
-      { "label": "Cover", "value": "Leave empty — add/select the cover image in Strapi." },
-      { "label": "Authordata", "value": "Leave empty — add the correct author entry/relation." },
-      { "label": "FAQ Section", "value": "Leave empty — add FAQ items if needed." },
-      { "label": "Popularity Name", "value": "Trending" }
-    ],
-    "ambiguities": [
-      "cover: Template instruction or placeholder, not a field value.",
-      "authordata: Template instruction or placeholder, not a field value."
-    ],
-    "warnings": [],
-    "confidence": "low",
-    "imageCount": 0,
-    "wordCount": 120,
-    "duplicateDocumentId": null
+    "images": [],
+    "duplicateDocumentId": null,
+    "debug": { "fieldStates": {} }
   }
 }
 ```
 
-In the current implementation, `missingFields` lists only absent fields; explicitly empty and unresolved fields are represented in `fieldStates`. Manual/unsupported values remain in `unmappedFields` or the extraction `fields` object, not the CMS payload.
+The preview `payload` is the normalized object used by confirmation. Diagnostics and intentionally ignored document fields are isolated under `debug`.
 
 ## CMS payload and uploader behavior
 
 `confirm` sends the selected collection's Strapi 5 REST draft-creation request with `{ "data": <payload> }`. Single types are handled as one shared entry and do not use collection duplicate checks. The client does not update existing documents. An existing matching collection entry causes a `409` conflict; no existing entry is overwritten.
 
-The uploader validates the preview against the selected content type and omits unresolved relations, unsupported fields, and empty/missing values. Mammoth extracts embedded image bytes and retains stable image indices, captions, alt text, and nearby document locations. A confidently identified image can be assigned automatically; otherwise the preview permits manual image-to-field assignment. The service uploads assigned binary files to Strapi's upload endpoint with the entry ID, content type UID, and media field name, then verifies each uploaded media ID is linked in the saved entry. Unassigned images must be explicitly skipped; no image reference or CMS ID is fabricated.
+The uploader validates the preview against the selected content type and omits unresolved relations, unsupported optional fields, and empty/missing values. Mammoth extracts embedded image bytes and retains stable image indices, captions, alt text, and nearby document locations. A confidently identified image can be assigned automatically; otherwise the preview permits manual assignment to a supported top-level media field. Assigned binary files are uploaded to Strapi's upload endpoint and verified. Images with no supported media destination are safely ignored; no image reference or CMS ID is fabricated.
 
 If a separate teammate-owned uploader consumes the preview response, it must:
 

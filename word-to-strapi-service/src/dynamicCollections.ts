@@ -56,6 +56,7 @@ export interface StrapiAttributeInfo {
   multiple?: boolean;
   allowedTypes?: string[];
   enum?: string[];
+  targetField?: string;
 }
 
 export interface DynamicImportField {
@@ -65,9 +66,12 @@ export interface DynamicImportField {
   supported: boolean;
   multiple?: boolean;
   allowedTypes?: string[];
+  enumValues?: string[];
   sourceField?: string;
   componentUid?: string;
   repeatable?: boolean;
+  componentFields?: DynamicImportField[];
+  targetField?: string;
   note?: string;
 }
 
@@ -87,6 +91,7 @@ export interface DynamicImportCollection {
 
 const SUPPORTED_SCALAR_TYPES = new Set([
   'string', 'text', 'richtext', 'email', 'uid', 'date', 'datetime', 'boolean', 'integer', 'float', 'decimal',
+  'enumeration', 'json', 'blocks',
 ]);
 
 const DOCUMENT_FIELD_SOURCE_BY_NAME: Record<string, string> = {
@@ -100,13 +105,15 @@ const DOCUMENT_FIELD_SOURCE_BY_NAME: Record<string, string> = {
   category: 'categoryname',
   categoryname: 'categoryname',
   content: 'content',
-  contentnew: 'contentnew',
+  contentnew: 'contentSections',
   cover: 'cover',
   coverimage: 'cover',
   date: 'date',
   description: 'description',
   faqsection: 'faqsection',
   formsection: 'formsection',
+  seo: 'defaultSeo',
+  defaultseo: 'defaultSeo',
   popularityname: 'popularityname',
   shareimage: 'defaultSeo.shareImage',
   slug: 'slug',
@@ -122,6 +129,8 @@ function attributeToField(
   name: string,
   attr: StrapiAttributeInfo,
   componentSchemas: ReadonlyMap<string, Record<string, StrapiAttributeInfo>>,
+  parentSourceField?: string,
+  componentStack: readonly string[] = [],
 ): DynamicImportField {
   const type = attr.type;
   const supported = SUPPORTED_SCALAR_TYPES.has(type) || type === 'media';
@@ -134,43 +143,73 @@ function attributeToField(
       multiple: attr.multiple ?? false,
       allowedTypes: attr.allowedTypes ?? [],
     } : {}),
+    ...(type === 'enumeration' && attr.enum ? { enumValues: [...attr.enum] } : {}),
+    ...(attr.targetField ? { targetField: attr.targetField } : {}),
   };
 
   const lower = name.toLowerCase();
-  if (type === 'uid') {
-    field.sourceField = 'slug';
-  } else if (type === 'media') {
-    field.sourceField = DOCUMENT_FIELD_SOURCE_BY_NAME[lower];
-    field.note = 'Media fields require an explicitly referenced embedded image or manual selection.';
-  } else if (['string', 'text', 'richtext'].includes(type)) {
-    // Map common Strapi field names to known source fields
-    field.sourceField = DOCUMENT_FIELD_SOURCE_BY_NAME[lower];
-    if (!field.sourceField && lower === 'body') field.sourceField = 'content';
-  } else if (type === 'date' || type === 'datetime') {
-    field.sourceField = DOCUMENT_FIELD_SOURCE_BY_NAME[lower] ?? 'date';
-    field.supported = true;
-  } else if (type === 'component') {
+  if (type === 'component') {
     field.componentUid = attr.component;
     field.repeatable = attr.repeatable ?? false;
-    if (
-      lower === 'contentnew' &&
-      attr.component === 'component.content-new' &&
-      attr.repeatable === true &&
-      isVerifiedContentNewComponent(componentSchemas.get(attr.component))
-    ) {
+    field.sourceField = DOCUMENT_FIELD_SOURCE_BY_NAME[lower] ?? name;
+    const componentAttributes = attr.component && !componentStack.includes(attr.component)
+      ? componentSchemas.get(attr.component)
+      : undefined;
+    if (componentAttributes) {
+      field.componentFields = Object.entries(componentAttributes).map(([childName, childAttribute]) =>
+        attributeToField(
+          childName,
+          childAttribute,
+          componentSchemas,
+          sourceFieldForComponent(name, childName, parentSourceField),
+          attr.component ? [...componentStack, attr.component] : componentStack,
+        ),
+      );
       field.supported = true;
-      field.sourceField = 'contentSections';
-      field.note = 'Mapped to verified repeatable content-new components.';
+      if (lower === 'contentnew') {
+        const title = field.componentFields.find((child) =>
+          child.name.toLowerCase() === 'title' && child.type === 'string');
+        const content = field.componentFields.find((child) =>
+          child.name.toLowerCase() === 'content' &&
+          ['text', 'richtext', 'blocks'].includes(child.type));
+        field.supported = attr.repeatable === true && Boolean(title && content);
+        if (!field.supported) {
+          field.note = 'Section mapping requires a repeatable component with title and content fields.';
+        }
+      }
     } else {
-      field.note = lower === 'contentnew'
-        ? 'Component UID, repeatability, or child fields do not match the verified content-new schema.'
-        : `Component field "${name}" — structured mapping may be limited.`;
+      field.supported = false;
+      field.note = `Component field "${name}" has no verified component schema.`;
     }
   } else if (type === 'relation') {
     field.note = 'Relations require explicit resolution; document text is never treated as an ID.';
+  } else if (type === 'media') {
+    field.sourceField = sourceFieldFor(name, parentSourceField);
+    field.note = 'Media fields require an explicit image assignment.';
+  } else {
+    field.sourceField = sourceFieldFor(name, parentSourceField);
   }
 
   return field;
+}
+
+function sourceFieldFor(name: string, parentSourceField?: string): string {
+  const lower = name.toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (parentSourceField === 'defaultSeo') return `defaultSeo.${name}`;
+  if (parentSourceField === 'authordata' && lower === 'authorname') return 'authordata';
+  if (parentSourceField === 'button' && lower === 'link') return 'button';
+  return DOCUMENT_FIELD_SOURCE_BY_NAME[lower] ?? (lower === 'body' ? 'content' : name);
+}
+
+function sourceFieldForComponent(
+  componentName: string,
+  childName: string,
+  parentSourceField?: string,
+): string {
+  const componentSource = DOCUMENT_FIELD_SOURCE_BY_NAME[
+    componentName.toLowerCase().replace(/[^a-z0-9]/g, '')
+  ] ?? parentSourceField;
+  return sourceFieldFor(childName, componentSource);
 }
 
 /**
@@ -211,14 +250,6 @@ export function contentTypeToImportCollection(
     fields,
     dynamic: true,
   };
-}
-
-function isVerifiedContentNewComponent(
-  attributes: Record<string, StrapiAttributeInfo> | undefined,
-): boolean {
-  return attributes?.title?.type === 'string' &&
-    attributes.content?.type === 'blocks' &&
-    attributes.contentHtml?.type === 'text';
 }
 
 function normalizeContentType(record: StrapiFormattedContentType): StrapiContentTypeInfo | null {
@@ -302,20 +333,11 @@ export async function fetchDynamicCollections(
       (ct.kind === 'collectionType' || ct.kind === 'singleType')
     );
 
-    const usesContentNew = userTypes.some((type) =>
-      Object.entries(type.attributes).some(([name, attribute]) =>
-        name.toLowerCase() === 'contentnew' &&
-        attribute.type === 'component' &&
-        attribute.component === 'component.content-new' &&
-        attribute.repeatable === true,
-      ),
-    );
     const componentSchemas = new Map<string, Record<string, StrapiAttributeInfo>>();
-    if (usesContentNew) {
-      try {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
-        let componentResponse: Response;
+    try {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+          let componentResponse: Response;
         try {
           componentResponse = await fetchFn(
             `${base}/api/content-type-builder/components`,
@@ -337,12 +359,11 @@ export async function fetchDynamicCollections(
             if (component.uid && attributes) componentSchemas.set(component.uid, attributes);
           }
         } else {
-          console.warn(`[dynamicCollections] Component schema verification returned ${componentResponse.status}; contentNew fields will remain unsupported.`);
+          console.warn(`[dynamicCollections] Component schema discovery returned ${componentResponse.status}; component fields will remain unsupported.`);
         }
-      } catch (error) {
+  } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        console.warn(`[dynamicCollections] Component schema verification failed; contentNew fields will remain unsupported: ${message}`);
-      }
+        console.warn(`[dynamicCollections] Component schema discovery failed; component fields will remain unsupported: ${message}`);
     }
 
     return userTypes.map((type) => contentTypeToImportCollection(type, componentSchemas));

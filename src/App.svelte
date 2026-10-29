@@ -128,7 +128,6 @@
       {connectionStatus}
       connectionOrigin={GRAPHQL_ORIGIN}
       {connectionVersion}
-      reconnect={connect}
     />
   {:else}
 

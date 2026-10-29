@@ -537,7 +537,56 @@ describe('Rule-Based and AI Mapping — Field Independence', () => {
       description: 'Document summary',
       content: 'Preserved blog body',
     });
-    expect(result.warnings.some((warning) => warning.includes('unrelatedArticleField'))).toBe(true);
+    expect(result.warnings.some((warning) => warning.includes('unrelatedArticleField'))).toBe(false);
+  });
+
+  it('maps nested scalar component fields using their declared types', async () => {
+    const doc = createMockDoc({
+      parsedFields: {
+        title: 'Nested fields',
+        details: {
+          published: 'yes',
+          rating: '4',
+          publishedOn: '2026-03-08',
+          category: 'GUIDE',
+          metadata: '{"source":"docx"}',
+        },
+      },
+    });
+    const blog = getImportCollection('api::blog.blog')!;
+    const collection = {
+      ...blog,
+      fields: [
+        ...blog.fields,
+        {
+          name: 'details',
+          type: 'component',
+          required: false,
+          supported: true,
+          componentUid: 'component.details',
+          repeatable: false,
+          sourceField: 'details',
+          componentFields: [
+            { name: 'published', type: 'boolean', required: false, supported: true },
+            { name: 'rating', type: 'integer', required: false, supported: true },
+            { name: 'publishedOn', type: 'date', required: false, supported: true },
+            { name: 'category', type: 'enumeration', enumValues: ['news', 'guide'], required: false, supported: true },
+            { name: 'metadata', type: 'json', required: false, supported: true },
+          ],
+        },
+      ],
+    };
+
+    const result = await mapDocumentToCollection(doc, collection, '', 'test-model');
+
+    expect(result.payload.details).toEqual({
+      published: true,
+      rating: 4,
+      publishedOn: '2026-03-08',
+      category: 'guide',
+      metadata: { source: 'docx' },
+    });
+    expect(result.warnings).toEqual([]);
   });
 });
 

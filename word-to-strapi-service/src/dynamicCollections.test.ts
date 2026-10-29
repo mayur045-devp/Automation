@@ -124,11 +124,10 @@ describe('contentTypeToImportCollection', () => {
     expect(catField?.note).toMatch(/relation/i);
   });
 
-  it('only enables verified repeatable contentNew components', () => {
+  it('enables repeatable contentNew using the real text child schema', () => {
     const componentSchemas = new Map([['component.content-new', {
       title: { type: 'string' },
-      content: { type: 'blocks' },
-      contentHtml: { type: 'text' },
+      content: { type: 'text' },
     }]]);
     const collection = contentTypeToImportCollection(makeContentType({
       attributes: {
@@ -168,8 +167,7 @@ describe('contentTypeToImportCollection', () => {
       },
     }), new Map([['component.content-new', {
       title: { type: 'string' },
-      content: { type: 'blocks' },
-      contentHtml: { type: 'string' },
+      content: { type: 'integer' },
     }]]));
     expect(wrongChildType.fields.find((field) => field.name === 'contentNew')?.supported).toBe(false);
   });
@@ -276,8 +274,7 @@ describe('fetchDynamicCollections', () => {
             schema: {
               attributes: {
                 title: { type: 'string' },
-                content: { type: 'blocks' },
-                contentHtml: { type: 'text' },
+                content: { type: 'text' },
               },
             },
           }],

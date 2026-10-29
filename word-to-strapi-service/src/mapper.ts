@@ -1,4 +1,5 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import { contentSectionToText, type ContentSection } from "./contentNew";
 import {
   AiMappingResult,
   AiMappingResultSchema,
@@ -146,105 +147,8 @@ export async function mapDocumentToCollection(
   const payload: Record<string, unknown> = {};
   const fieldStates: CollectionMappingResult["fieldStates"] = {};
   const warnings: string[] = [];
-
-  for (const field of collection.fields) {
-    if (field.name.toLowerCase() === 'contentnew' && field.type === 'component') {
-      if (
-        !field.supported ||
-        field.componentUid !== 'component.content-new' ||
-        field.repeatable !== true
-      ) {
-        fieldStates[field.name] = {
-          status: 'unresolved',
-          reason: 'contentNew requires the verified repeatable component.content-new schema.',
-        };
-        warnings.push(`${field.name}: ${fieldStates[field.name].reason}`);
-        continue;
-      }
-
-      const components = (doc.contentSections ?? []).map((section) => ({
-        title: section.title,
-        content: section.blocks,
-        contentHtml: section.html,
-      }));
-      if (components.length > 0) {
-        fields[field.name] = components;
-        payload[field.name] = components;
-        fieldStates[field.name] = {
-          status: 'extracted',
-          reason: `Extracted ${components.length} ordered contentNew section(s) from DOCX structure.`,
-          rawValue: `${components.length} section(s)`,
-        };
-        for (const section of doc.contentSections) {
-          warnings.push(...section.warnings);
-        }
-      } else {
-        fieldStates[field.name] = {
-          status: 'missing',
-          reason: 'No section boundaries were detected in the document.',
-        };
-      }
-      continue;
-    }
-
-    if (!field.supported) {
-      fieldStates[field.name] = {
-        status: "unresolved",
-        reason:
-          field.note ??
-          `Field type "${field.type}" is not supported by the importer.`,
-      };
-      warnings.push(`${field.name}: ${fieldStates[field.name].reason}`);
-      continue;
-    }
-
-    const sourceField = field.sourceField ?? field.name;
-    const sourceState =
-      doc.fieldStates[sourceField as keyof typeof doc.fieldStates];
-    const sourceValue = getDocumentSourceValue(doc, sourceField, field.name);
-
-    if (field.type === "media") {
-      fieldStates[field.name] =
-        sourceState?.imageIndex === undefined
-          ? {
-              status: sourceState?.status ?? "missing",
-              ...(sourceState?.reason ? { reason: sourceState.reason } : {}),
-              ...(sourceState?.rawValue
-                ? { rawValue: sourceState.rawValue }
-                : {}),
-            }
-          : {
-              status: "extracted",
-              imageIndex: sourceState.imageIndex,
-              rawValue: sourceState.rawValue,
-            };
-      continue;
-    }
-
-    if (
-      ["extracted", "unresolved"].includes(sourceState?.status ?? "") &&
-      typeof sourceValue === "string" &&
-      sourceValue.trim()
-    ) {
-      fields[field.name] = sourceValue;
-      fieldStates[field.name] = { status: "extracted", rawValue: sourceValue };
-      payload[field.name] = sourceValue;
-    } else {
-      fieldStates[field.name] = {
-        status: sourceState?.status ?? "missing",
-        ...(sourceState?.reason ? { reason: sourceState.reason } : {}),
-        ...(sourceState?.rawValue ? { rawValue: sourceState.rawValue } : {}),
-      };
-    }
-  }
-
-  const aiEligibleFields = collection.fields.filter(
-    (field) =>
-      field.supported &&
-      field.sourceField &&
-      fieldStates[field.name]?.status === "missing" &&
-      ["string", "text", "richtext"].includes(field.type),
-  );
+  const aiValues = new Map<string, unknown>();
+  const aiEligibleFields = getAiEligibleFields(doc, collection.fields);
 
   if (aiEligibleFields.length && (apiKey || generateResponse)) {
     try {
@@ -255,15 +159,9 @@ export async function mapDocumentToCollection(
           fields: {
             type: "object",
             properties: Object.fromEntries(
-              aiEligibleFields.map((field) => [
-                field.name,
-                {
-                  type: ["string", "null"],
-                  description: `Extract ${field.type} value for ${field.name}.`,
-                },
-              ]),
+              aiEligibleFields.map(({ path, field }) => [path, aiSchemaForField(field)]),
             ),
-            required: aiEligibleFields.map((field) => field.name),
+            required: aiEligibleFields.map(({ path }) => path),
           },
         },
         required: ["fields"],
@@ -286,93 +184,62 @@ export async function mapDocumentToCollection(
           );
       const parsed: unknown = JSON.parse(responseText);
       if (!isRecord(parsed) || !isRecord(parsed.fields)) {
-        warnings.push(
-          "AI response does not contain a valid fields object; parser values were kept.",
-        );
+        warnings.push("AI extraction returned an invalid fields object; parsed document values were kept.");
       } else {
-        for (const field of aiEligibleFields) {
-          const value = parsed.fields[field.name];
-          if (typeof value !== "string" || !value.trim()) continue;
-          fields[field.name] = value;
-          payload[field.name] = value;
-          fieldStates[field.name] = {
-            status: "extracted",
-            reason:
-              "Extracted by AI using the selected collection schema; verify in preview.",
-            rawValue: value,
-          };
-        }
-        const unknownFields = Object.keys(parsed.fields).filter(
-          (fieldName) =>
-            !aiEligibleFields.some((field) => field.name === fieldName),
-        );
-        if (unknownFields.length) {
-          warnings.push(
-            `AI returned fields outside the selected schema; ignored: ${unknownFields.join(", ")}.`,
-          );
+        for (const { path, field } of aiEligibleFields) {
+          const value = parsed.fields[path];
+          if (value !== null && value !== undefined) aiValues.set(path, value);
         }
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      warnings.push(
-        `Schema-aware AI extraction failed; deterministic values were kept: ${message}`,
-      );
+      warnings.push(`AI extraction failed; parsed document values were kept: ${message}`);
     }
   }
 
-  const missingFields = collection.fields
-    .filter((field) => fieldStates[field.name]?.status === "missing")
-    .map((field) => field.name);
-  const ambiguities = collection.fields
-    .filter((field) => {
-      const status = fieldStates[field.name]?.status;
-      return (
-        status === "unresolved" ||
-        status === "requires_review" ||
-        status === "invalid"
-      );
-    })
-    .map(
-      (field) =>
-        `${field.name}: ${fieldStates[field.name].reason ?? fieldStates[field.name].status}`,
-    );
-  const mappedSourceFields = new Set(
-    collection.fields
-      .filter((field) => field.supported)
-      .map((field) => field.sourceField)
-      .filter(Boolean),
-  );
-  const unmappedFields = [
-    ...doc.unmappedFields,
-    ...DOCUMENT_FIELD_MAPPINGS.filter(
-      (mapping) => !mappedSourceFields.has(mapping.internalField),
-    ).flatMap((mapping) => {
-      const state = doc.fieldStates[mapping.internalField];
-      if (
-        !state.rawValue ||
-        ["missing", "explicitly_empty"].includes(state.status)
-      )
-        return [];
-      return [{ label: mapping.label, value: state.rawValue }];
-    }),
-  ];
-  if (
-    doc.images.length &&
-    !collection.fields.some(
-      (field) => field.supported && field.type === "media",
-    )
-  ) {
-    warnings.push(
-      "Embedded images are not mapped because this collection has no supported media field.",
-    );
+  for (const field of collection.fields) {
+    const mapped = mapCollectionField(doc, field, field.name, aiValues, warnings);
+    if (mapped.value !== undefined) {
+      fields[field.name] = mapped.value;
+      payload[field.name] = mapped.value;
+    }
+    fieldStates[field.name] = mapped.state;
   }
+
+  for (const field of collection.fields.filter((candidate) =>
+    candidate.type === "uid" && fieldStates[candidate.name]?.status === "missing",
+  )) {
+    const target = field.targetField
+      ? collection.fields.find((candidate) => candidate.name === field.targetField)
+      : collection.fields.find((candidate) =>
+          candidate.sourceField === "title" || normalizeFieldName(candidate.name) === "title",
+        );
+    const title = target
+      ? getDocumentSourceValue(doc, target.sourceField ?? target.name, target.name)
+      : doc.title;
+    if (typeof title !== "string" || !title.trim()) continue;
+    const slug = slugify(title);
+    if (!slug) continue;
+    fields[field.name] = slug;
+    payload[field.name] = slug;
+    fieldStates[field.name] = {
+      status: "extracted",
+      reason: `Generated from ${target?.name ?? "the document title"}.`,
+      rawValue: slug,
+    };
+  }
+
+  const missingFields = collection.fields
+    .filter((field) => field.required && fieldStates[field.name]?.status !== "extracted")
+    .map((field) => field.name);
+  const ambiguities = warnings;
 
   return {
     fields,
     payload,
     fieldStates,
     missingFields,
-    unmappedFields,
+    unmappedFields: [],
     ambiguities,
     warnings: [...new Set(warnings)],
     confidence: ambiguities.length
@@ -383,37 +250,269 @@ export async function mapDocumentToCollection(
   };
 }
 
+interface AiTargetField {
+  path: string;
+  field: ImportCollection["fields"][number];
+}
+
+function getAiEligibleFields(
+  doc: ExtractedDocument,
+  fields: readonly ImportCollection["fields"][number][],
+): AiTargetField[] {
+  const result: AiTargetField[] = [];
+  const visit = (
+    field: ImportCollection["fields"][number],
+    path: string,
+  ): void => {
+    if (!field.supported || field.type === "media" || field.type === "relation") return;
+    if (field.type === "component") {
+      if (field.name.toLowerCase() === "contentnew") return;
+      for (const child of field.componentFields ?? []) {
+        visit(child, `${path}.${child.name}`);
+      }
+      return;
+    }
+    if (!["string", "text", "richtext", "uid", "date", "datetime", "email", "integer", "float", "decimal", "boolean", "enumeration"].includes(field.type)) return;
+    const sourceValue = getDocumentSourceValue(doc, field.sourceField ?? field.name, field.name);
+    if (sourceValue === undefined || sourceValue === null ||
+      (typeof sourceValue === "string" && !sourceValue.trim())) {
+      result.push({ path, field });
+    }
+  };
+  for (const field of fields) visit(field, field.name);
+  return result;
+}
+
+function aiSchemaForField(field: ImportCollection["fields"][number]): Record<string, unknown> {
+  const type = ["integer", "float", "decimal"].includes(field.type)
+    ? "number"
+    : field.type === "boolean"
+      ? "boolean"
+      : "string";
+  return {
+    type: [type, "null"],
+    description: `Extract a reliable ${field.type} value for ${field.name}, or null if absent.`,
+  };
+}
+
+function mapCollectionField(
+  doc: ExtractedDocument,
+  field: ImportCollection["fields"][number],
+  path: string,
+  aiValues: ReadonlyMap<string, unknown>,
+  warnings: string[],
+  parentValue?: unknown,
+): { value: unknown; state: CollectionMappingResult["fieldStates"][string] } {
+  if (!field.supported || field.type === "relation") {
+    return { value: undefined, state: { status: "missing" } };
+  }
+  if (field.type === "media") {
+    const sourceField = field.sourceField ?? field.name;
+    const sourceState = doc.fieldStates[sourceField as keyof typeof doc.fieldStates];
+    return {
+      value: undefined,
+      state: sourceState?.imageIndex === undefined
+        ? { status: sourceState?.status ?? "missing" }
+        : { status: "extracted", imageIndex: sourceState.imageIndex, rawValue: sourceState.rawValue },
+    };
+  }
+  if (field.type === "component") {
+    if (!field.componentFields) return { value: undefined, state: { status: "missing" } };
+    const sourceValue = parentValue ?? getDocumentSourceValue(
+      doc,
+      field.sourceField ?? field.name,
+      field.name,
+    );
+    if (field.name.toLowerCase() === "contentnew" && Array.isArray(doc.contentSections)) {
+      const sections = doc.contentSections.map((section) =>
+        mapContentSection(section, field.componentFields ?? [], `${path}`, warnings),
+      ).filter((section) => Object.keys(section).length > 0);
+      return sections.length
+        ? { value: sections, state: { status: "extracted", rawValue: `${sections.length} section(s)` } }
+        : { value: undefined, state: { status: "missing" } };
+    }
+
+    const componentInstances = field.repeatable
+      ? Array.isArray(sourceValue) ? sourceValue : sourceValue === undefined ? [] : [sourceValue]
+      : sourceValue === undefined ? [] : [sourceValue];
+    const mapped = componentInstances.map((instance) =>
+      mapComponentInstance(
+        doc,
+        field.componentFields ?? [],
+        path,
+        aiValues,
+        warnings,
+        instance,
+      ),
+    ).filter((instance) => Object.keys(instance).length > 0);
+    const value = field.repeatable ? mapped : mapped[0];
+    return value !== undefined && (!Array.isArray(value) || value.length > 0)
+      ? { value, state: { status: "extracted" } }
+      : { value: undefined, state: { status: "missing" } };
+  }
+
+  const extracted = aiValues.has(path)
+    ? aiValues.get(path)
+    : parentValue !== undefined
+      ? parentValue
+      : getDocumentSourceValue(doc, field.sourceField ?? field.name, field.name);
+  if (extracted === undefined || extracted === null || (typeof extracted === "string" && !extracted.trim())) {
+    return { value: undefined, state: { status: "missing" } };
+  }
+
+  const normalized = normalizeCollectionValue(field, extracted);
+  if (!normalized.success) {
+    warnings.push(`${path}: ${normalized.message}`);
+    return { value: undefined, state: { status: "invalid", reason: normalized.message } };
+  }
+  return {
+    value: normalized.value,
+    state: { status: "extracted", rawValue: typeof extracted === "string" ? extracted : JSON.stringify(extracted) },
+  };
+}
+
+function mapComponentInstance(
+  doc: ExtractedDocument,
+  fields: readonly ImportCollection["fields"][number][],
+  path: string,
+  aiValues: ReadonlyMap<string, unknown>,
+  warnings: string[],
+  parentValue: unknown,
+): Record<string, unknown> {
+  const instance: Record<string, unknown> = {};
+  for (const child of fields) {
+    const childPath = `${path}.${child.name}`;
+    const suppliedValue = getNestedValue(parentValue, child.name);
+    const mapped = mapCollectionField(
+      doc,
+      child,
+      childPath,
+      aiValues,
+      warnings,
+      suppliedValue,
+    );
+    if (mapped.value !== undefined) instance[child.name] = mapped.value;
+  }
+  return instance;
+}
+
+function mapContentSection(
+  section: ContentSection,
+  fields: readonly ImportCollection["fields"][number][],
+  path: string,
+  warnings: string[],
+): Record<string, unknown> {
+  const component: Record<string, unknown> = {};
+  for (const field of fields) {
+    const normalizedName = field.name.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const value = normalizedName === "title"
+      ? section.title
+      : normalizedName === "content"
+        ? field.type === "blocks" ? section.blocks : contentSectionToText(section)
+        : undefined;
+    if (value === undefined) continue;
+    const mapped = normalizeCollectionValue(field, value);
+    if (mapped.success) component[field.name] = mapped.value;
+    else warnings.push(`${path}.${field.name}: ${mapped.message}`);
+  }
+  return component;
+}
+
 function getDocumentSourceValue(
   doc: ExtractedDocument,
   sourceField: string,
   attributeName: string,
 ): unknown {
   const parsedValue = sourceField.includes(".")
-    ? sourceField
-        .split(".")
-        .reduce<unknown>(
-          (current, key) => (isRecord(current) ? current[key] : undefined),
-          doc.parsedFields,
-        )
-    : (doc.parsedFields[sourceField as keyof typeof doc.parsedFields] ??
-      doc[sourceField as keyof ExtractedDocument]);
+    ? sourceField.split(".").reduce<unknown>(
+        (current, key) => isRecord(current) ? current[key] : undefined,
+        doc.parsedFields,
+      )
+    : doc.parsedFields[sourceField as keyof typeof doc.parsedFields] ??
+      doc[sourceField as keyof ExtractedDocument];
   if (parsedValue !== undefined && parsedValue !== null) return parsedValue;
 
-  const normalizedAttribute = attributeName
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, "");
-  const customField = doc.unmappedFields.find(
-    (field) =>
-      field.label.toLowerCase().replace(/[^a-z0-9]/g, "") ===
-      normalizedAttribute,
+  const normalizedNames = new Set([
+    normalizeFieldName(attributeName),
+    normalizeFieldName(sourceField.split(".").at(-1) ?? sourceField),
+  ]);
+  return doc.unmappedFields.find((entry) =>
+    normalizedNames.has(normalizeFieldName(entry.label)),
+  )?.value;
+}
+
+function getNestedValue(value: unknown, key: string): unknown {
+  if (!isRecord(value)) return undefined;
+  const normalizedKey = normalizeFieldName(key);
+  const foundKey = Object.keys(value).find((candidate) =>
+    normalizeFieldName(candidate) === normalizedKey,
   );
-  return customField?.value;
+  return foundKey ? value[foundKey] : undefined;
+}
+
+function normalizeFieldName(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function normalizeCollectionValue(
+  field: ImportCollection["fields"][number],
+  value: unknown,
+): { success: true; value: unknown } | { success: false; message: string } {
+  if (field.type === "json") {
+    if (typeof value !== "string") return { success: true, value };
+    try {
+      return { success: true, value: JSON.parse(value) };
+    } catch {
+      return { success: false, message: "Expected valid JSON; value was omitted." };
+    }
+  }
+  if (field.type === "blocks") {
+    return Array.isArray(value)
+      ? { success: true, value }
+      : { success: false, message: "Expected a Strapi Blocks array; value was omitted." };
+  }
+  if (field.type === "boolean") {
+    if (typeof value === "boolean") return { success: true, value };
+    if (typeof value === "string") {
+      const normalized = value.trim().toLowerCase();
+      if (["true", "yes", "1"].includes(normalized)) return { success: true, value: true };
+      if (["false", "no", "0"].includes(normalized)) return { success: true, value: false };
+    }
+    return { success: false, message: "Expected an explicit true/false value; value was omitted." };
+  }
+  if (["integer", "float", "decimal"].includes(field.type)) {
+    const parsed = typeof value === "number" ? value : Number(String(value).trim());
+    if (!Number.isFinite(parsed) || (field.type === "integer" && !Number.isInteger(parsed))) {
+      return { success: false, message: `Expected a valid ${field.type}; value was omitted.` };
+    }
+    return { success: true, value: parsed };
+  }
+  if (typeof value !== "string") {
+    return { success: false, message: `Expected ${field.type} text; value was omitted.` };
+  }
+  const trimmed = value.trim();
+  if (field.type === "uid") {
+    const slug = slugify(trimmed);
+    return slug ? { success: true, value: slug } : { success: false, message: "No usable UID value was found." };
+  }
+  if (field.type === "date" && !isValidIsoDate(trimmed)) {
+    return { success: false, message: "Expected a real YYYY-MM-DD date; value was omitted." };
+  }
+  if (field.type === "datetime" && Number.isNaN(Date.parse(trimmed))) {
+    return { success: false, message: "Expected a valid datetime; value was omitted." };
+  }
+  if (field.type === "enumeration") {
+    const matched = field.enumValues?.find((candidate) => candidate.toLowerCase() === trimmed.toLowerCase());
+    if (!matched) return { success: false, message: `Value does not match an allowed enumeration${field.enumValues?.length ? ` (${field.enumValues.join(", ")})` : ""}.` };
+    return { success: true, value: matched };
+  }
+  return { success: true, value: trimmed };
 }
 
 function buildCollectionPrompt(
   doc: ExtractedDocument,
   collection: ImportCollection,
-  fields: ImportCollection["fields"][number][],
+  fields: AiTargetField[],
 ): string {
   return [
     "Extract values from the document for the selected Strapi collection only.",
@@ -422,8 +521,8 @@ function buildCollectionPrompt(
     "Preserve supplied wording and body content; return null for absent or empty values.",
     `Selected collection: ${collection.displayName} (${collection.uid})`,
     "Supported target fields:",
-    ...fields.map((field) => `- ${field.name}: ${field.type}`),
-    'Return JSON only in the shape {"fields":{"targetField":string|null}} using only the listed field names.',
+    ...fields.map(({ path, field }) => `- ${path}: ${field.type}`),
+    'Return JSON only in the shape {"fields":{"target.path":value|null}} using only the listed paths. Leave a field null unless the document clearly supports the match.',
     "Document:",
     doc.rawText,
   ].join("\n");

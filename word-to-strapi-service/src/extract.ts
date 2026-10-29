@@ -1,4 +1,6 @@
 import mammoth from "mammoth";
+import { parseDocument } from "htmlparser2";
+import type { AnyNode, Element } from "domhandler";
 import path from "path";
 import {
   extractContentSections,
@@ -422,38 +424,81 @@ function assignField(
 /**
  * Parse 2-column tables from Mammoth HTML into key-value pairs.
  */
-function parseTables(html: string): Array<{ key: string; value: string }> {
-  const pairs: Array<{ key: string; value: string }> = [];
-  const tableRegex = /<table[^>]*>(.*?)<\/table>/gis;
-  let tableMatch: RegExpExecArray | null;
+function parseTables(html: string): Array<{ key: string; value: string; tableIndex: number }> {
+  const document = parseDocument(html, { decodeEntities: true });
+  const tables = document.children.filter(
+    (node): node is Element => isElement(node) && node.name === "table",
+  );
+  const pairs: Array<{ key: string; value: string; tableIndex: number }> = [];
 
-  while ((tableMatch = tableRegex.exec(html)) !== null) {
-    const tableHtml = tableMatch[1];
-    const trRegex = /<tr[^>]*>(.*?)<\/tr>/gis;
-    let trMatch: RegExpExecArray | null;
-
-    while ((trMatch = trRegex.exec(tableHtml)) !== null) {
-      const rowHtml = trMatch[1];
-      const cells: string[] = [];
-      const tdRegex = /<t[dh][^>]*>(.*?)<\/t[dh]>/gis;
-      let tdMatch: RegExpExecArray | null;
-
-      while ((tdMatch = tdRegex.exec(rowHtml)) !== null) {
-        cells.push(stripHtml(tdMatch[1]).trim());
-      }
-
-      if (cells.length >= 2) {
-        const key = cells[0];
-        // If there are more than 2 cells, join remaining as value
-        const value = cells.slice(1).join(" ").trim();
-        if (key) {
-          pairs.push({ key, value });
-        }
-      }
+  tables.forEach((table, tableIndex) => {
+    for (const row of tableRows(table)) {
+      const cells = row.children
+        .filter((child): child is Element =>
+          isElement(child) && (child.name === "td" || child.name === "th"),
+        )
+        .map((cell) => readableNodeText(cell).trim());
+      if (cells.length < 2 || !cells[0]) continue;
+      pairs.push({
+        key: cells[0],
+        value: cells.slice(1).join(" ").trim(),
+        tableIndex,
+      });
     }
-  }
-
+  });
   return pairs;
+}
+
+function tableRows(table: Element): Element[] {
+  const rows: Element[] = [];
+  const visit = (element: Element): void => {
+    for (const child of element.children) {
+      if (!isElement(child) || child.name === "table") continue;
+      if (child.name === "tr") rows.push(child);
+      else visit(child);
+    }
+  };
+  visit(table);
+  return rows;
+}
+
+function readableNodeText(node: AnyNode): string {
+  if (node.type === "text") return node.data;
+  if (!isElement(node)) return "";
+  if (node.name === "img") {
+    const token = node.attribs.src?.match(/^\[IMAGE_\d+\]$/i)?.[0];
+    if (token) return token;
+    return `[Image: ${node.attribs.alt?.trim() || "embedded image"}]`;
+  }
+  if (node.name === "br") return "\n";
+
+  const content = node.children.map(readableNodeText).join("");
+  if (node.name === "a") {
+    const url = node.attribs.href?.trim();
+    return url && /^(https?:\/\/|mailto:|\/(?!\/)|#)/i.test(url)
+      ? `[${content}](${url})`
+      : content;
+  }
+  if (node.name === "strong" || node.name === "b") return `**${content}**`;
+  if (node.name === "em" || node.name === "i") return `*${content}*`;
+  if (node.name === "s") return `~~${content}~~`;
+  if (node.name === "u") return `<u>${content}</u>`;
+  return content;
+}
+
+function readableTableText(table: Element): string {
+  return tableRows(table).map((row) => {
+    const cells = row.children
+      .filter((child): child is Element =>
+        isElement(child) && (child.name === "td" || child.name === "th"),
+      )
+      .map((cell) => cell.children.map(readableNodeText).join(" ").trim());
+    return `| ${cells.join(" | ")} |`;
+  }).join("\n");
+}
+
+function isElement(node: AnyNode): node is Element {
+  return node.type === "tag" || node.type === "script" || node.type === "style";
 }
 
 /**
@@ -504,7 +549,7 @@ export async function extractDocx(
   const html = result.value;
   const contentSections = extractContentSections(html);
   if (!validateContentSections(contentSections)) {
-    throw new Error("DOCX content sections failed Blocks/HTML conversion validation.");
+    throw new Error("DOCX content sections failed text and Blocks validation.");
   }
   const contentWarnings = result.messages
     .filter((message) => message.type === "warning")
@@ -516,57 +561,56 @@ export async function extractDocx(
   const unmappedFields: Array<{ label: string; value: string }> = [];
 
   // Step 1: Parse table key-value pairs (highest fidelity for structured templates)
+  const structuredTableIndices = new Set<number>();
   const tablePairs = parseTables(html);
-  for (const { key, value } of tablePairs) {
-    if (!assignField(parsedFields, fieldStates, key, value) && value.trim()) {
+  for (const { key, value, tableIndex } of tablePairs) {
+    if (assignField(parsedFields, fieldStates, key, value)) {
+      structuredTableIndices.add(tableIndex);
+    } else if (value.trim()) {
       unmappedFields.push({ label: key, value });
     }
   }
-  // Step 2: Strip <table>...</table> from HTML so table contents don't pollute paragraph stream
-  const htmlWithoutTables = html.replace(/<table[^>]*>.*?<\/table>/gis, " ");
 
-  // Step 3: Parse remaining elements in document order
+  // Step 2: Parse document blocks in source order without flattening tables into adjacent paragraphs.
   type DocElement =
     | { type: "heading"; level: number; text: string }
     | { type: "paragraph"; text: string }
-    | { type: "list"; items: string[] };
+    | { type: "list"; items: string[] }
+    | { type: "table"; text: string; tableIndex: number };
 
   const headings: Array<{ level: number; text: string }> = [];
   const paragraphs: string[] = [];
   const lists: string[][] = [];
   const elements: DocElement[] = [];
-
-  const elemRegex = /<(h[1-6]|p|[uo]l)[^>]*>(.*?)<\/\1>/gis;
-  let match: RegExpExecArray | null;
-
-  while ((match = elemRegex.exec(htmlWithoutTables)) !== null) {
-    const tag = match[1].toLowerCase();
-    const innerHtml = match[2];
-
-    if (tag.startsWith("h")) {
+  const documentNodes = parseDocument(html, { decodeEntities: true }).children;
+  let tableIndex = 0;
+  for (const node of documentNodes) {
+    if (!isElement(node)) continue;
+    const tag = node.name.toLowerCase();
+    if (tag === "table") {
+      const text = readableTableText(node);
+      if (text && !structuredTableIndices.has(tableIndex)) {
+        elements.push({ type: "table", text, tableIndex });
+      }
+      tableIndex += 1;
+    } else if (/^h[1-6]$/.test(tag)) {
       const level = parseInt(tag.substring(1), 10);
-      const text = stripHtml(innerHtml);
+      const text = readableNodeText(node).trim();
       if (text) {
         headings.push({ level, text });
         elements.push({ type: "heading", level, text });
       }
     } else if (tag === "p") {
-      const text = stripHtml(innerHtml);
-      if (
-        text &&
-        (!text.startsWith("[IMAGE_") || /^\[IMAGE_\d+\]$/i.test(text))
-      ) {
+      const text = readableNodeText(node).trim();
+      if (text && (!text.startsWith("[IMAGE_") || /^\[IMAGE_\d+\]$/i.test(text))) {
         paragraphs.push(text);
         elements.push({ type: "paragraph", text });
       }
     } else if (tag === "ul" || tag === "ol") {
-      const items: string[] = [];
-      const liRegex = /<li[^>]*>(.*?)<\/li>/gis;
-      let liMatch: RegExpExecArray | null;
-      while ((liMatch = liRegex.exec(innerHtml)) !== null) {
-        const itemText = stripHtml(liMatch[1]);
-        if (itemText) items.push(itemText);
-      }
+      const items = node.children
+        .filter((child): child is Element => isElement(child) && child.name === "li")
+        .map((item) => readableNodeText(item).trim())
+        .filter(Boolean);
       if (items.length > 0) {
         lists.push(items);
         elements.push({ type: "list", items });
@@ -574,7 +618,7 @@ export async function extractDocx(
     }
   }
 
-  // Step 4: Parse non-table elements and filter template artifacts
+  // Step 3: Parse non-table elements and filter template artifacts
   const usedElementIndices = new Set<number>();
   let currentMetadataSection:
     "faq" | "author" | "seo" | "form" | "button" | null = null;
@@ -740,7 +784,7 @@ export async function extractDocx(
     unmappedFields.push({ label: "SEO section", value: seoItems.join("\n\n") });
   }
 
-  // Step 5: Resolve Title (if not already found in table or label)
+  // Step 4: Resolve Title (if not already found in table or label)
   let title = parsedFields.title ?? null;
   let titleElemIndex = -1;
 
@@ -801,7 +845,7 @@ export async function extractDocx(
     };
   }
 
-  // Step 6: Resolve Description (if not already found in table or label)
+  // Step 5: Resolve Description (if not already found in table or label)
   let description = parsedFields.description ?? null;
   if (!description && fieldStates.description.status === "missing") {
     for (let i = 0; i < elements.length; i++) {
@@ -827,7 +871,7 @@ export async function extractDocx(
     };
   }
 
-  // Step 7: Resolve Content (main body ONLY)
+  // Step 6: Resolve Content (main body ONLY)
   // If content was explicitly set via table, prioritize that
   let content = parsedFields.content ?? null;
 
@@ -847,6 +891,8 @@ export async function extractDocx(
         for (const item of elem.items) {
           contentParts.push(`- ${item}`);
         }
+      } else if (elem.type === "table") {
+        contentParts.push(elem.text);
       }
     }
     content = contentParts.length > 0 ? contentParts.join("\n\n") : null;

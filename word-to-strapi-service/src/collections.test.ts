@@ -117,4 +117,35 @@ describe('verified Strapi import collections', () => {
     const article = getImportCollection('api::article.article')!;
     expect(article.fields.find((field) => field.name === 'tital_blog_category')?.supported).toBe(false);
   });
+
+  it('validates nested required fields, enums, dates, and JSON against collection metadata', () => {
+    const blog = getImportCollection('api::blog.blog')!;
+    const target = {
+      ...blog,
+      fields: [
+        {
+          name: 'details',
+          type: 'component',
+          required: true,
+          supported: true,
+          componentFields: [
+            { name: 'status', type: 'enumeration', enumValues: ['draft', 'published'], required: true, supported: true },
+            { name: 'publishedOn', type: 'date', required: false, supported: true },
+            { name: 'metadata', type: 'json', required: false, supported: true },
+          ],
+        },
+      ],
+    };
+
+    expect(validateImportPayload(target, {}).success).toBe(false);
+    expect(validateImportPayload(target, {
+      details: { status: 'published', publishedOn: '2026-03-08', metadata: { source: 'docx' } },
+    }).success).toBe(true);
+    expect(validateImportPayload(target, {
+      details: { status: 'archived' },
+    }).success).toBe(false);
+    expect(validateImportPayload(target, {
+      details: { status: 'draft', publishedOn: '2026-02-31' },
+    }).success).toBe(false);
+  });
 });

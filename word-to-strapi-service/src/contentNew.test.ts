@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   extractContentSections,
-  sanitizeContentHtml,
+  contentSectionToText,
   validateContentNewComponents,
 } from "./contentNew";
 import { extractDocx } from "./extract";
@@ -106,28 +106,28 @@ describe("contentNew DOCX sections", () => {
     ]);
   });
 
-  it("preserves hyperlinks, paragraphs, and table position in a section", async () => {
+  it("preserves hyperlinks, paragraphs, and table position in readable section text", async () => {
     const doc = await extractDocx(await createSectionedDocx(), "links-and-tables.docx");
     const first = doc.contentSections[0];
-    expect(first.html).toContain('<a href="https://example.test/labs"');
+    expect(first.content).toContain("[the lab guide](https://example.test/labs)");
+    expect(first.content).toContain("Opening paragraph");
+    expect(first.content).toContain("Closing paragraph");
     expect(first.blocks).toContainEqual(expect.objectContaining({
       type: "paragraph",
       children: expect.arrayContaining([
         expect.objectContaining({ type: "link", url: "https://example.test/labs" }),
       ]),
     }));
-    const before = first.html.indexOf("Opening paragraph");
-    const table = first.html.indexOf("<table>");
-    const after = first.html.indexOf("Closing paragraph");
+    const before = first.content.indexOf("Opening paragraph");
+    const table = first.content.indexOf("| **Requirement** | **Action** |");
+    const after = first.content.indexOf("Closing paragraph");
     expect(before).toBeGreaterThanOrEqual(0);
     expect(table).toBeGreaterThan(before);
     expect(after).toBeGreaterThan(table);
-    expect(first.html).toContain("<thead>");
-    expect(first.html).toContain("<th><p><strong>Requirement</strong></p></th>");
-    expect(first.html).toContain("<td><p>Check the current certificate.</p></td>");
+    expect(first.content).toContain("| Accreditation | Check the current certificate. |");
   });
 
-  it("maps sections to a validated repeatable Strapi component array", async () => {
+  it("maps sections to the selected repeatable text component without unsupported fields", async () => {
     const doc = await extractDocx(await createSectionedDocx(), "mapped-sections.docx");
     const collection = getImportCollection("api::article.article")!;
     const mapping = await mapDocumentToCollection(doc, collection, "", "test-model");
@@ -138,15 +138,16 @@ describe("contentNew DOCX sections", () => {
     expect(components).toHaveLength(9);
     expect(components[0]).toMatchObject({
       title: "Choosing the lab",
-      contentHtml: expect.stringContaining("<table>"),
+      content: expect.stringContaining("| **Requirement** | **Action** |"),
     });
     expect(components[4]).toMatchObject({
-      contentHtml: expect.stringContaining("Sample crate"),
+      content: expect.stringContaining("| Sample crate | Dry and intact |"),
     });
+    expect(components[0]).not.toHaveProperty("contentHtml");
     expect(validateImportPayload(collection, mapping.payload).success).toBe(true);
     expect(validateImportPayload(collection, {
       ...mapping.payload,
-      contentNew: [{ title: "Invalid", content: "<p>Not Blocks</p>", contentHtml: "<script/>" }],
+      contentNew: [{ title: "Invalid", content: "Body", contentHtml: "<script/>" }],
     }).success).toBe(false);
   });
 
@@ -202,12 +203,12 @@ describe("contentNew DOCX sections", () => {
       "Bold heading - 2",
       "Markdown heading (3)",
     ]);
-    expect(sections[0].html).toContain("Introductory context.");
-    expect(sections[1].html).toContain("Bold heading body.");
-    expect(sections[2].html).toContain("Markdown body.");
+    expect(sections[0].content).toContain("Introductory context.");
+    expect(sections[1].content).toContain("Bold heading body.");
+    expect(sections[2].content).toContain("Markdown body.");
   });
 
-  it("preserves multiple tables, empty cells, merged cells, nested tables, and cell paragraphs", () => {
+  it("preserves table rows, empty cells, merged-cell text, nested tables, and cell paragraphs", () => {
     const [section] = extractContentSections(`
       <h2>Rows</h2>
       <p>Before</p>
@@ -222,34 +223,30 @@ describe("contentNew DOCX sections", () => {
       <table><tr><td>Second table</td></tr></table>
       <p>After</p>
     `);
-    expect(section.html).toContain('<th colspan="2">Header</th>');
-    expect(section.html).toContain('<td rowspan="2"><p>First line</p><p>Second line</p></td>');
-    expect(section.html).toContain("<td></td>");
-    expect(section.html).toContain("Nested cell");
-    expect(section.html).toContain("Second table");
-    expect(section.html.indexOf("Before")).toBeLessThan(section.html.indexOf("<table>"));
-    expect(section.html.indexOf("Between")).toBeGreaterThan(section.html.indexOf("Nested cell"));
-    expect(section.html.indexOf("After")).toBeGreaterThan(section.html.lastIndexOf("<table>"));
-    expect(section.warnings).toContain(
-      "Tables are stored in contentHtml because Strapi Blocks has no table node.",
-    );
+    expect(section.content).toContain("| Header |");
+    expect(section.content).toContain("| First line Second line |");
+    expect(section.content).toContain("Nested cell");
+    expect(section.content).toContain("Second table");
+    expect(section.content.indexOf("Before")).toBeLessThan(section.content.indexOf("| Header |"));
+    expect(section.content.indexOf("Between")).toBeGreaterThan(section.content.indexOf("Nested cell"));
+    expect(section.content.indexOf("After")).toBeGreaterThan(section.content.lastIndexOf("Second table"));
   });
 
-  it("escapes untrusted HTML, rejects dangerous URL schemes, and validates saved component shape", () => {
-    const html = sanitizeContentHtml(
-      '<p onclick="run()">Safe & <script>alert(1)</script><a href="javascript:alert(1)">link</a></p>',
-    );
-    expect(html).toBe("<p>Safe &amp; link</p>");
-    expect(html).not.toMatch(/script|onclick|javascript:/i);
+  it("validates the text-only saved component shape", () => {
     expect(validateContentNewComponents([{
       title: "Safe",
-      content: [{ type: "paragraph", children: [{ type: "text", text: "Safe" }] }],
-      contentHtml: html,
+      content: "Safe",
     }])).toBe(true);
     expect(validateContentNewComponents([{
       title: "Unsafe",
-      content: [],
-      contentHtml: '<img src=x onerror="run()">',
+      content: [{ type: "paragraph" }],
     }])).toBe(false);
+    expect(contentSectionToText({
+      title: "text",
+      content: "paragraph",
+      html: "<p>unused</p>",
+      blocks: [],
+      warnings: [],
+    })).toBe("paragraph");
   });
 });

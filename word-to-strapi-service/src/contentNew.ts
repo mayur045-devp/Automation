@@ -46,27 +46,16 @@ export type StrapiContentBlock =
 
 export interface ContentSection {
   title: string;
-  html: string;
+  content: string;
   blocks: StrapiContentBlock[];
   warnings: string[];
 }
 
-const SAFE_INLINE_TAGS = new Set([
-  "a",
-  "b",
-  "br",
-  "code",
-  "em",
-  "i",
-  "s",
-  "span",
-  "strong",
-  "sub",
-  "sup",
-  "u",
-]);
+export function contentSectionToText(section: ContentSection): string {
+  return section.content;
+}
+
 const BLOCK_TAGS = new Set(["p", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol"]);
-const DROP_TAGS = new Set(["script", "style", "iframe", "object", "embed", "svg", "math"]);
 
 interface SectionBoundary {
   index: number;
@@ -99,14 +88,9 @@ export function extractContentSections(html: string): ContentSection[] {
       ...children.slice(boundary.index + 1, end),
     ];
     const sectionWarnings: string[] = [];
-    const htmlContent = contentNodes
-      .map((node) => serializeSafeNode(node, sectionWarnings))
-      .join("")
-      .trim();
-
     sections.push({
       title: boundary.title,
-      html: htmlContent,
+      content: nodesToText(contentNodes),
       blocks: nodesToBlocks(contentNodes, sectionWarnings),
       warnings: [...new Set(sectionWarnings)],
     });
@@ -128,7 +112,7 @@ export function validateContentSections(value: unknown): value is ContentSection
       isRecord(section) &&
       typeof section.title === "string" &&
       section.title.trim().length > 0 &&
-      typeof section.html === "string" &&
+      typeof section.content === "string" &&
       Array.isArray(section.blocks) &&
       section.blocks.every(isValidBlock) &&
       Array.isArray(section.warnings) &&
@@ -140,22 +124,11 @@ export function validateContentNewComponents(value: unknown): boolean {
   return Array.isArray(value) && value.every(
     (component) =>
       isRecord(component) &&
-      hasOnlyKeys(component, ["title", "content", "contentHtml"]) &&
+      hasOnlyKeys(component, ["title", "content"]) &&
       typeof component.title === "string" &&
       component.title.trim().length > 0 &&
-      Array.isArray(component.content) &&
-      component.content.every(isValidBlock) &&
-      typeof component.contentHtml === "string" &&
-      sanitizeContentHtml(component.contentHtml) === component.contentHtml,
+      typeof component.content === "string",
   );
-}
-
-export function sanitizeContentHtml(html: string): string {
-  const document = parseDocument(html, { decodeEntities: true });
-  return document.children
-    .map((node) => serializeSafeNode(node, []))
-    .join("")
-    .trim();
 }
 
 function findSectionBoundaries(nodes: AnyNode[]): SectionBoundary[] {
@@ -245,9 +218,8 @@ function nodesToBlocks(nodes: AnyNode[], warnings: string[]): StrapiContentBlock
   for (const node of nodes) {
     if (!isElement(node)) continue;
     if (node.name === "table") {
-      if (!warnings.includes("Tables are stored in contentHtml because Strapi Blocks has no table node.")) {
-        warnings.push("Tables are stored in contentHtml because Strapi Blocks has no table node.");
-      }
+      const text = nodesToText([node]);
+      if (text) blocks.push({ type: "paragraph", children: [{ type: "text", text }] });
       continue;
     }
     if (/^h[1-6]$/.test(node.name)) {
@@ -283,6 +255,79 @@ function nodesToBlocks(nodes: AnyNode[], warnings: string[]): StrapiContentBlock
     }
   }
   return blocks;
+}
+
+function nodesToText(nodes: AnyNode[]): string {
+  const inlineText = (children: AnyNode[]): string => children.map((node) => {
+    if (node.type === "text") return node.data;
+    if (!isElement(node)) return "";
+    if (node.name === "img") {
+      return `[Image: ${node.attribs.alt?.trim() || "embedded image"}]`;
+    }
+    if (node.name === "br") return "\n";
+    const text = inlineText(node.children);
+    if (node.name === "a") {
+      const url = safeUrl(node.attribs.href);
+      return url ? `[${text}](${url})` : text;
+    }
+    if (node.name === "strong" || node.name === "b") return `**${text}**`;
+    if (node.name === "em" || node.name === "i") return `*${text}*`;
+    if (node.name === "s") return `~~${text}~~`;
+    if (node.name === "u") return `<u>${text}</u>`;
+    return text;
+  }).join("");
+
+  const blockText = (node: AnyNode): string => {
+    if (!isElement(node)) return "";
+    if (node.name === "table") {
+      const rows: string[] = [];
+      const collectRows = (element: Element): void => {
+        for (const child of element.children) {
+          if (!isElement(child)) continue;
+          if (child.name === "table" && child !== node) {
+            const nested = blockText(child);
+            if (nested) rows.push(nested);
+          } else if (child.name === "tr") {
+            const cells = child.children
+              .filter((cell): cell is Element => isElement(cell) && ["td", "th"].includes(cell.name))
+              .map((cell) => cell.children
+                .map((content) => blockText(content) || inlineText([content]))
+                .filter(Boolean)
+                .join(" ")
+                .trim());
+            rows.push(`| ${cells.join(" | ")} |`);
+          } else {
+            collectRows(child);
+          }
+        }
+      };
+      collectRows(node);
+      return rows.join("\n");
+    }
+    if (node.name === "ul" || node.name === "ol") {
+      return node.children
+        .filter((child): child is Element => isElement(child) && child.name === "li")
+        .map((item, index) => {
+          const itemContent = item.children
+            .map((child) => isElement(child) && ["ul", "ol"].includes(child.name)
+              ? blockText(child)
+              : blockText(child) || inlineText([child]))
+            .filter(Boolean)
+            .join(" ");
+          return `${node.name === "ol" ? `${index + 1}.` : "-"} ${itemContent.trim()}`;
+        })
+        .join("\n");
+    }
+    if (/^h[1-6]$/.test(node.name)) {
+      return `${"#".repeat(Number(node.name.slice(1)))} ${inlineText(node.children).trim()}`;
+    }
+    if (node.name === "p" || node.name === "blockquote") {
+      return inlineText(node.children).trim();
+    }
+    return node.children.map(blockText).filter(Boolean).join("\n\n");
+  };
+
+  return nodes.map(blockText).filter(Boolean).join("\n\n").trim();
 }
 
 function inlineNodes(nodes: AnyNode[], warnings: string[]): Array<StrapiTextNode | StrapiLinkNode> {
@@ -323,125 +368,6 @@ function inlineNodes(nodes: AnyNode[], warnings: string[]): Array<StrapiTextNode
     }
   }
   return result;
-}
-
-function serializeSafeNode(node: AnyNode, warnings: string[]): string {
-  if (node.type === "text") return escapeHtml(node.data);
-  if (node.type === "comment" || !isElement(node)) return "";
-  const tag = node.name.toLowerCase();
-  if (DROP_TAGS.has(tag)) {
-    warnings.push(`Unsupported <${tag}> content was omitted for safety.`);
-    return "";
-  }
-  if (tag === "img") {
-    warnings.push("An embedded image inside the section was retained as a text placeholder.");
-    const label = node.attribs.alt?.trim() || node.attribs.src?.match(/^\[IMAGE_(\d+)\]$/i)?.[0] || "embedded image";
-    return `<span>[Image: ${escapeHtml(label)}]</span>`;
-  }
-  if (tag === "table") return serializeTable(node, warnings);
-  if (tag === "br") return "<br>";
-
-  const children = node.children.map((child) => serializeSafeNode(child, warnings)).join("");
-  if (tag === "a") {
-    const url = safeUrl(node.attribs.href);
-    if (!url) {
-      warnings.push("A hyperlink with an unsupported URL was converted to plain text.");
-      return children;
-    }
-    return `<a href="${escapeHtml(url)}" rel="noopener noreferrer">${children}</a>`;
-  }
-  if (SAFE_INLINE_TAGS.has(tag) || BLOCK_TAGS.has(tag) || tag === "blockquote") {
-    return `<${tag}>${children}</${tag}>`;
-  }
-  if (children) warnings.push(`Unsupported <${tag}> formatting was flattened while preserving its text.`);
-  return children;
-}
-
-function serializeTable(table: Element, warnings: string[]): string {
-  const allRows = findTableRows(table);
-  if (!allRows.length) {
-    warnings.push("A Word table contained no readable rows.");
-    return "<table><tbody></tbody></table>";
-  }
-  const declaredHeaders = findTableRows(table, "thead");
-  const headerSet = new Set(declaredHeaders.map((row) => row.element));
-  let headerRows = declaredHeaders;
-  let bodyRows = allRows.filter((row) => !headerSet.has(row.element));
-  if (!headerRows.length && bodyRows[0]?.cells.every((cell) =>
-    cell.name === "th" || isEntirelyBold(cell),
-  )) {
-    headerRows = [bodyRows.shift()!];
-  }
-  const head = headerRows.length
-    ? `<thead>${headerRows.map((row) => serializeRow(row.cells, warnings, true)).join("")}</thead>`
-    : "";
-  const body = bodyRows.map((row) => serializeRow(row.cells, warnings, false)).join("");
-  return `<table>${head}<tbody>${body}</tbody></table>`;
-}
-
-function findTableRows(
-  table: Element,
-  group?: "thead" | "tbody" | "tfoot",
-): Array<{ element: Element; cells: Element[] }> {
-  const rows: Array<{ element: Element; cells: Element[] }> = [];
-  const visit = (element: Element, currentGroup?: "thead" | "tbody" | "tfoot"): void => {
-    for (const child of element.children) {
-      if (!isElement(child)) continue;
-      if (child.name === "table") continue;
-      if (child.name === "tr") {
-        if (!group || currentGroup === group) {
-          rows.push({
-            element: child,
-            cells: child.children.filter(
-              (cell): cell is Element => isElement(cell) && (cell.name === "td" || cell.name === "th"),
-            ),
-          });
-        }
-      } else if (child.name === "thead" || child.name === "tbody" || child.name === "tfoot") {
-        visit(child, child.name);
-      }
-    }
-  };
-  visit(table);
-  return rows;
-}
-
-function serializeRow(cells: Element[], warnings: string[], header: boolean): string {
-  return `<tr>${cells.map((cell) => {
-    const tag = header || cell.name === "th" ? "th" : "td";
-    const spans = ["colspan", "rowspan"].flatMap((name) => {
-      if (cell.attribs[name] !== undefined) {
-        const value = Number.parseInt(cell.attribs[name], 10);
-        if (!Number.isInteger(value) || value < 1 || value > 100) {
-          warnings.push(`Unsupported table ${name} value "${cell.attribs[name]}" was omitted.`);
-          return [];
-        }
-        return [` ${name}="${value}"`];
-      }
-      return [];
-    }).join("");
-    const content = cell.children.map((child) => serializeSafeNode(child, warnings)).join("");
-    return `<${tag}${spans}>${content}</${tag}>`;
-  }).join("")}</tr>`;
-}
-
-function isEntirelyBold(element: Element): boolean {
-  let hasText = false;
-  let allTextBold = true;
-  const visit = (node: AnyNode, bold: boolean): void => {
-    if (node.type === "text") {
-      if (node.data.trim()) {
-        hasText = true;
-        if (!bold) allTextBold = false;
-      }
-      return;
-    }
-    if (!isElement(node)) return;
-    const nestedBold = bold || node.name === "strong" || node.name === "b";
-    for (const child of node.children) visit(child, nestedBold);
-  };
-  visit(element, false);
-  return hasText && allTextBold;
 }
 
 function safeUrl(value: string | undefined): string | null {
@@ -503,13 +429,4 @@ function hasOnlyKeys(value: Record<string, unknown>, allowed: string[]): boolean
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
 }

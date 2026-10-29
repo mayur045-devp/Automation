@@ -3,7 +3,7 @@ import express, { Request, Response, NextFunction } from 'express';
 import multer from 'multer';
 import path from 'path';
 import { extractDocx } from './extract';
-import { mapDocumentToArticle, mapDocumentToCollection } from './mapper';
+import { mapDocumentToCollection } from './mapper';
 import {
   getImportableCollections,
   getImportCollection,
@@ -62,6 +62,12 @@ function requireApiKey(req: Request, res: Response, next: NextFunction): void {
   }
   next();
 }
+
+app.use('/api/schema', requireApiKey, (_req: Request, res: Response) => {
+  res.status(410).json({
+    error: 'Schema changes are disabled. Create and maintain content types and components in Strapi, then refresh the collection list.',
+  });
+});
 
 // --- Multer: .docx only, max 10 MB ---
 const upload = multer({
@@ -180,33 +186,19 @@ app.post(
       // Phase 2: extract structured content
       const doc = await extractDocx(req.file.buffer, req.file.originalname);
 
-      // Each supported collection uses its verified target schema for extraction and mapping.
-      let aiResult: AiMappingResult | CollectionMappingResult;
-      let collectionMapping: CollectionMappingResult | null = null;
-      if (collection.mapper === 'article') {
-        const articleResult = await mapDocumentToArticle(doc, GEMINI_API_KEY, GEMINI_MODEL);
-        collectionMapping = await mapDocumentToCollection(doc, collection, '', GEMINI_MODEL);
-        const extraPayload = Object.fromEntries(
-          Object.entries(collectionMapping.payload)
-            .filter(([name]) => !Object.prototype.hasOwnProperty.call(articleResult.payload, name)),
-        );
-        aiResult = {
-          ...articleResult,
-          payload: { ...articleResult.payload, ...extraPayload } as typeof articleResult.payload,
-        };
-      } else {
-        collectionMapping = await mapDocumentToCollection(doc, collection, GEMINI_API_KEY, GEMINI_MODEL);
-        aiResult = collectionMapping;
-      }
+      const mappingResult = await mapDocumentToCollection(
+        doc,
+        collection,
+        GEMINI_API_KEY,
+        GEMINI_MODEL,
+      );
 
-      const schemaDiff = compareDocumentSchema(doc, collection);
-
-      const validation = validateImportPayload(collection, aiResult.payload);
+      const validation = validateImportPayload(collection, mappingResult.payload);
       if (!validation.success) {
         res.status(422).json({
           error: 'Validation failed — no entry will be created',
           validationErrors: validation.errors.map((message) => ({ message })),
-          aiResult,
+          filename: req.file.originalname,
         });
         return;
       }
@@ -243,33 +235,11 @@ app.post(
         collection.uid,
         connectionOrigin,
         validation.data,
-        aiResult,
+        mappingResult,
         doc.images,
         req.file.originalname,
         doc,
       );
-      const contentNewField = collection.fields.find((field) =>
-        field.name.toLowerCase() === 'contentnew' &&
-        field.type === 'component' &&
-        field.componentUid === 'component.content-new' &&
-        field.repeatable === true &&
-        field.supported,
-      );
-      const unmappedSections = doc.contentSections.length > 0
-        ? contentNewField
-          ? []
-          : doc.contentSections.map((section) => section.title)
-        : contentNewField && doc.content
-          ? ['Unsectioned document body content']
-          : [];
-      const previewWarnings = [
-        ...aiResult.warnings,
-        ...(collectionMapping?.warnings ?? []),
-        ...doc.contentWarnings,
-        ...(unmappedSections.length
-          ? ['Detected content sections cannot be imported because the selected collection does not expose a verified repeatable contentNew component.']
-          : []),
-      ];
 
       res.json({
         importId,
@@ -279,25 +249,18 @@ app.post(
             displayName: collection.displayName,
             apiName: collection.apiName,
           },
+          documentName: req.file.originalname,
           payload: validation.data,
-          fields: { ...aiResult.fields, ...(collectionMapping?.fields ?? {}) },
-          fieldStates: { ...aiResult.fieldStates, ...(collectionMapping?.fieldStates ?? {}) },
-          missingFields: aiResult.missingFields,
-          unmappedFields: [
-            ...aiResult.unmappedFields,
-            ...(collectionMapping?.unmappedFields ?? []),
-          ],
-          contentSections: doc.contentSections,
-          contentWarnings: doc.contentWarnings,
-          unmappedSections,
-          ambiguities: aiResult.ambiguities,
-          warnings: [...new Set(previewWarnings)],
-          confidence: aiResult.confidence,
-          imageCount: doc.images.length,
           images: imagePreview,
-          schemaDiff,
-          wordCount: doc.metadata.wordCount,
           duplicateDocumentId,
+          debug: {
+            fieldStates: mappingResult.fieldStates,
+            missingRequiredFields: mappingResult.missingFields,
+            ambiguities: mappingResult.ambiguities,
+            warnings: mappingResult.warnings,
+            contentWarnings: doc.contentWarnings,
+            ignoredDocumentFields: doc.unmappedFields,
+          },
         },
       });
     } catch (err: any) {
@@ -370,10 +333,6 @@ app.post('/api/import/confirm', requireApiKey, async (req: Request, res: Respons
 
     // Resolve image assignments
     // Priority: 1. manual imageAssignments from frontend, 2. auto-detected from fieldStates
-    const articleResult = collection.mapper === 'article'
-      ? pending.aiResult as AiMappingResult
-      : undefined;
-
     // Build a map of fieldName -> image to upload
     const mediaUploads: Array<{ fieldName: string; image: typeof pending.images[0] }> = [];
 
@@ -416,9 +375,7 @@ app.post('/api/import/confirm', requireApiKey, async (req: Request, res: Respons
         candidate.type === 'media' && candidate.supported)) {
         const sourceField = field.sourceField ?? field.name;
         const imageIndex = pending.document?.fieldStates[sourceField]?.imageIndex ??
-          (articleResult && sourceField === 'cover'
-            ? articleResult.fieldStates.cover?.imageIndex
-            : (pending.aiResult as CollectionMappingResult).fieldStates[field.name]?.imageIndex);
+          (pending.aiResult as CollectionMappingResult).fieldStates[field.name]?.imageIndex;
         if (imageIndex === undefined) continue;
         const image = pending.images.find((candidate) => candidate.index === imageIndex);
         if (!image) throw new Error(`Media field "${field.name}" references unavailable image ${imageIndex}.`);
@@ -429,7 +386,10 @@ app.post('/api/import/confirm', requireApiKey, async (req: Request, res: Respons
     const unassignedImages = pending.images
       .filter((image) => !assignedImageIndexes.has(image.index))
       .map((image) => image.index);
-    if (unassignedImages.length > 0 && skipUnassignedImages !== true) {
+    const hasSupportedMediaField = collection.fields.some((field) =>
+      field.type === 'media' && field.supported,
+    );
+    if (hasSupportedMediaField && unassignedImages.length > 0 && skipUnassignedImages !== true) {
       res.status(422).json({
         error: `Images ${unassignedImages.join(', ')} are not assigned to a media field. Assign them or explicitly confirm skipping unassigned images.`,
       });
@@ -832,7 +792,7 @@ if (require.main === module) {
     console.log(`[word-to-strapi-service] Running on http://localhost:${PORT}`);
     console.log(`  Strapi URL: ${STRAPI_URL}`);
     console.log(`  Strapi API token: ${STRAPI_API_TOKEN ? '*** (set)' : '⚠ NOT SET'}`);
-    console.log(`  Strapi Admin JWT: ${STRAPI_ADMIN_JWT ? '*** (set)' : '⚠ NOT SET — dynamic discovery + schema creation unavailable'}`);
+    console.log(`  Strapi Admin JWT: ${STRAPI_ADMIN_JWT ? '*** (set)' : '⚠ NOT SET — live collection discovery unavailable'}`);
     console.log(`  Gemini key: ${GEMINI_API_KEY ? '*** (set)' : '⚠ NOT SET — using rule-based fallback'}`);
   });
 }
