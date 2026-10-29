@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { validateArticlePayload } from './schema';
+import { validateContentNewComponents } from './contentNew';
 import type { DynamicImportCollection } from './dynamicCollections';
 
 export interface ImportField {
@@ -10,6 +11,8 @@ export interface ImportField {
   multiple?: boolean;
   allowedTypes?: string[];
   sourceField?: string;
+  componentUid?: string;
+  repeatable?: boolean;
   note?: string;
 }
 
@@ -51,7 +54,15 @@ const VERIFIED_COLLECTIONS: readonly ImportCollection[] = [
       { name: 'buttonsubtitle', type: 'string', required: false, supported: true, sourceField: 'buttonsubtitle' },
       { name: 'time', type: 'string', required: false, supported: true, sourceField: 'time' },
       { name: 'tital_blog_category', type: 'relation', required: false, supported: false, note: 'Relations require explicit resolution; document text is never treated as an ID.' },
-      { name: 'contentNew', type: 'component', required: false, supported: false, note: 'Structured Blocks content is not inferred from plain text.' },
+      {
+        name: 'contentNew',
+        type: 'component',
+        required: false,
+        supported: true,
+        componentUid: 'component.content-new',
+        repeatable: true,
+        sourceField: 'contentSections',
+      },
       { name: 'polldata', type: 'component', required: false, supported: false },
       { name: 'Quizedata', type: 'component', required: false, supported: false },
     ],
@@ -201,7 +212,7 @@ export function validateImportPayload(
     const extraShape: Record<string, z.ZodTypeAny> = {};
     for (const field of extraDescriptors) {
       if (!field) continue;
-      const schema = scalarFieldSchema(field);
+      const schema = componentFieldSchema(field) ?? scalarFieldSchema(field);
       if (schema) extraShape[field.name] = schema;
     }
     const extraResult = z.object(extraShape).strict().safeParse(
@@ -230,8 +241,22 @@ export function validateImportPayload(
   const shape: Record<string, z.ZodTypeAny> = {};
   for (const field of collection.fields) {
     if (!field.supported || field.type === 'media') continue;
-    const schema = scalarFieldSchema(field);
+    const schema = componentFieldSchema(field) ?? scalarFieldSchema(field);
     if (schema) shape[field.name] = schema;
+  }
+
+  function componentFieldSchema(field: ImportField): z.ZodTypeAny | undefined {
+    if (
+      field.type === 'component' &&
+      field.componentUid === 'component.content-new' &&
+      field.repeatable === true &&
+      field.name.toLowerCase() === 'contentnew'
+    ) {
+      return z.custom<unknown[]>(validateContentNewComponents, {
+        message: 'contentNew must be a repeatable content-new component array with valid Blocks and HTML content.',
+      });
+    }
+    return undefined;
   }
 
   function scalarFieldSchema(field: ImportField): z.ZodTypeAny | undefined {

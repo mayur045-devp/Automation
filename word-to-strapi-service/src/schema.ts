@@ -10,10 +10,32 @@ export const SeoComponentSchema = z
     metaDescription: z.string().nullable().optional(),
     keywords: z.array(z.string()).optional(),
     metaRobots: z.string().nullable().optional(),
-    structuredData: z.string().nullable().optional(),
+    structureData: z
+      .union([
+        z.string(),
+        z.record(z.any()),
+        z.array(z.any()),
+        z.number(),
+        z.boolean(),
+      ])
+      .nullable()
+      .optional(),
+    structuredData: z
+      .union([
+        z.string(),
+        z.record(z.any()),
+        z.array(z.any()),
+        z.number(),
+        z.boolean(),
+      ])
+      .nullable()
+      .optional(),
     metaViewPort: z.string().nullable().optional(),
     canonicalURL: z.string().nullable().optional(),
-    shareImage: z.string().nullable().optional(),
+    shareImage: z
+      .union([z.string(), z.array(z.string()), z.record(z.any())])
+      .nullable()
+      .optional(),
   })
   .strict();
 
@@ -42,7 +64,14 @@ export const DocumentFieldsSchema = z
     date: z.string().nullable().optional(),
     authordata: z.string().nullable().optional(),
     categoryname: z.string().nullable().optional(),
-    contentnew: z.string().nullable().optional(),
+    contentnew: z
+      .union([z.string(), z.array(z.any()), z.record(z.any())])
+      .nullable()
+      .optional(),
+    contentNew: z
+      .union([z.string(), z.array(z.any()), z.record(z.any())])
+      .nullable()
+      .optional(),
     button: z.string().nullable().optional(),
     buttontitle: z.string().nullable().optional(),
     buttonsubtitle: z.string().nullable().optional(),
@@ -74,6 +103,7 @@ export const DOCUMENT_FIELD_KEYS = [
   "defaultSeo.metaDescription",
   "defaultSeo.keywords",
   "defaultSeo.metaRobots",
+  "defaultSeo.structureData",
   "defaultSeo.structuredData",
   "defaultSeo.metaViewPort",
   "defaultSeo.canonicalURL",
@@ -83,6 +113,7 @@ export const DOCUMENT_FIELD_KEYS = [
   "authordata",
   "categoryname",
   "contentnew",
+  "contentNew",
   "button",
   "buttontitle",
   "buttonsubtitle",
@@ -224,12 +255,21 @@ const FIELD_MAPPING_DEFINITIONS: readonly Omit<
     automatic: true,
   },
   {
-    label: "Default SEO / structuredData",
+    label: "Default SEO / structureData",
+    aliases: ["structureData", "structuredData", "Default SEO structureData", "Default SEO structuredData"],
+    internalField: "defaultSeo.structureData",
+    strapiField: "seo.structureData",
+    dataType: "component json",
+    automatic: true,
+  },
+  {
+    label: "Default SEO / structuredData (legacy)",
     aliases: ["structuredData", "Default SEO structuredData"],
     internalField: "defaultSeo.structuredData",
     strapiField: "seo.structuredData",
     dataType: "component string",
     automatic: true,
+    note: "Backward-compatible alias for older extraction templates.",
   },
   {
     label: "Default SEO / metaViewPort",
@@ -254,12 +294,12 @@ const FIELD_MAPPING_DEFINITIONS: readonly Omit<
   },
   {
     label: "Default SEO / shareImage",
-    aliases: ["shareImage"],
+    aliases: ["shareImage", "Share Image"],
     internalField: "defaultSeo.shareImage",
-    strapiField: null,
+    strapiField: "seo.shareImage",
     dataType: "media",
-    automatic: false,
-    note: "The component has metaImage and metaSocial, but no verified shareImage mapping.",
+    automatic: true,
+    note: "Share image is supported as an explicit media reference; this is only used when the document supplies a concrete image asset.",
   },
   {
     label: "Content",
@@ -296,12 +336,21 @@ const FIELD_MAPPING_DEFINITIONS: readonly Omit<
   },
   {
     label: "Content New",
-    aliases: ["contentNew"],
-    internalField: "contentnew",
+    aliases: ["contentNew", "Content New"],
+    internalField: "contentNew",
     strapiField: "contentNew",
     dataType: "component with Blocks",
-    automatic: false,
-    note: "Plain text is not converted into an invented Blocks structure.",
+    automatic: true,
+    note: "This field is treated as a repeatable component when the document provides a sectioned content block.",
+  },
+  {
+    label: "Content New",
+    aliases: ["contentnew", "contentNew"],
+    internalField: "contentnew",
+    strapiField: "contentNew",
+    dataType: "legacy component key",
+    automatic: true,
+    note: "Backward-compatible alias for older extraction templates.",
   },
   {
     label: "Button",
@@ -445,9 +494,20 @@ export const StrapiArticlePayloadSchema = z
         metaDescription: z.string().nullable().optional(),
         keywords: z.string().nullable().optional(),
         metaRobots: z.string().nullable().optional(),
-        structuredData: z.string().nullable().optional(),
+        structureData: z
+          .union([z.string(), z.record(z.any()), z.array(z.any())])
+          .nullable()
+          .optional(),
+        structuredData: z
+          .union([z.string(), z.record(z.any()), z.array(z.any())])
+          .nullable()
+          .optional(),
         metaViewport: z.string().nullable().optional(),
         canonicalURL: z.string().nullable().optional(),
+        shareImage: z
+          .union([z.string(), z.array(z.string()), z.record(z.any())])
+          .nullable()
+          .optional(),
       })
       .strict()
       .optional(),
@@ -646,9 +706,34 @@ export function buildStrapiPayload(
   addSeo("metaTitle", "metaTitle");
   addSeo("metaDescription", "metaDescription");
   addSeo("metaRobots", "metaRobots");
-  addSeo("structuredData", "structuredData");
+
+  const structureDataValue =
+    seo?.structureData ?? seo?.structuredData ?? null;
+  if (
+    canWrite("defaultSeo.structureData") &&
+    typeof structureDataValue === "string" &&
+    structureDataValue.trim()
+  ) {
+    seoPayload.structureData = structureDataValue.trim();
+  }
+  if (
+    canWrite("defaultSeo.structuredData") &&
+    typeof structureDataValue === "string" &&
+    structureDataValue.trim()
+  ) {
+    seoPayload.structuredData = structureDataValue.trim();
+  }
+
   addSeo("metaViewPort", "metaViewport");
   addSeo("canonicalURL", "canonicalURL");
+  const shareImageValue = seo?.shareImage;
+  if (
+    canWrite("defaultSeo.shareImage") &&
+    typeof shareImageValue === "string" &&
+    shareImageValue.trim()
+  ) {
+    seoPayload.shareImage = shareImageValue.trim();
+  }
   if (canWrite("defaultSeo.keywords") && seo?.keywords?.length) {
     seoPayload.keywords = seo.keywords.join(", ");
   }
@@ -701,11 +786,19 @@ export const AI_OUTPUT_JSON_SCHEMA = {
             metaDescription: { type: ["string", "null"] },
             keywords: { type: "array", items: { type: "string" } },
             metaRobots: { type: ["string", "null"] },
-            structuredData: { type: ["string", "null"] },
+            structureData: {
+              type: ["string", "object", "array", "number", "boolean", "null"],
+              description:
+                "Actual Strapi JSON field name. Accept both structureData and legacy structuredData variants.",
+            },
+            structuredData: {
+              type: ["string", "object", "array", "number", "boolean", "null"],
+              description: "Legacy alias used by older extraction prompts.",
+            },
             metaViewPort: { type: ["string", "null"] },
             canonicalURL: { type: ["string", "null"] },
             shareImage: {
-              type: ["string", "null"],
+              type: ["string", "array", "object", "null"],
               description:
                 "Extract only a supplied asset reference; never invent a media ID.",
             },
@@ -727,8 +820,12 @@ export const AI_OUTPUT_JSON_SCHEMA = {
           description: "Category name",
         },
         contentnew: {
-          type: ["string", "null"],
-          description: "Specific new content block if present",
+          type: ["string", "array", "object", "null"],
+          description: "Specific new content block if present (legacy key)",
+        },
+        contentNew: {
+          type: ["string", "array", "object", "null"],
+          description: "Repeatable contentNew component values if present",
         },
         button: { type: ["string", "null"], description: "Button text" },
         buttontitle: { type: ["string", "null"], description: "Button title" },

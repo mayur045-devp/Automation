@@ -1,4 +1,6 @@
 <script>
+  import ContentNewRenderer from './ContentNewRenderer.svelte';
+
   // Word-to-Strapi Import Page
   // Communicates with word-to-strapi-service (http://localhost:3001)
   // The X-Import-Key is a dev-local key only; no Strapi token ever reaches the frontend
@@ -885,6 +887,49 @@
         </section>
       {/if}
 
+      {#if preview.contentSections?.length > 0}
+        <section class="content-sections-panel" aria-label="Detected contentNew sections">
+          <div class="content-sections-heading">
+            <h3 class="preview-subtitle">Detected contentNew sections ({preview.contentSections.length})</h3>
+            <span class="content-storage-badge">Blocks + sanitized HTML</span>
+          </div>
+          <p class="collection-note">
+            Paragraphs, headings, lists, and links are stored as Strapi Blocks in <code>content</code>.
+            The complete ordered HTML, including tables, is stored in the approved <code>contentHtml</code> text field.
+          </p>
+          {#each preview.contentSections as section, index}
+            <article class="content-section-preview" data-testid="content-section-preview">
+              <h4>{index + 1}. {section.title}</h4>
+              <div class="section-rich-content">
+                <ContentNewRenderer contentHtml={section.html} content={section.blocks} />
+              </div>
+              <small>{section.blocks.length} Blocks node(s) · HTML preview</small>
+              {#if section.warnings?.length}
+                <ul class="section-content-warnings">
+                  {#each section.warnings as warning}<li>{warning}</li>{/each}
+                </ul>
+              {/if}
+            </article>
+          {/each}
+        </section>
+      {/if}
+
+      {#if preview.unmappedSections?.length > 0}
+        <div class="warning-block" role="alert">
+          <strong>Content not mapped to the selected collection:</strong>
+          <ul>{#each preview.unmappedSections as section}<li>{section}</li>{/each}</ul>
+          This document cannot be imported until the selected collection has the verified repeatable
+          <code>component.content-new</code> field.
+        </div>
+      {/if}
+
+      {#if preview.contentWarnings?.length > 0}
+        <div class="warning-block">
+          <strong>DOCX conversion warnings:</strong>
+          <ul>{#each preview.contentWarnings as warning}<li>{warning}</li>{/each}</ul>
+        </div>
+      {/if}
+
       <h3 class="preview-subtitle">All recognized document fields</h3>
       <div class="field-grid">
         {#each Object.entries(preview.fieldStates ?? {}) as [key, state]}
@@ -960,7 +1005,7 @@
 
       <div class="action-row">
         <button class="btn-ghost" on:click={cancel} disabled={isLoading}>✕ Cancel</button>
-        <button class="btn-primary" on:click={confirmImport} disabled={isLoading || schemaReviewRequired}>
+        <button class="btn-primary" on:click={confirmImport} disabled={isLoading || schemaReviewRequired || (preview.unmappedSections?.length ?? 0) > 0}>
           {#if isLoading}
             <span class="spinner-sm"></span> Creating draft…
           {:else}
@@ -1324,6 +1369,9 @@
   }
 
   .import-page {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
     max-width: 720px;
     margin: 0 auto;
     padding: 24px 16px 48px;
@@ -1481,6 +1529,9 @@
 
   /* Preview card */
   .preview-card, .success-card {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
     background: var(--bg-card, rgba(255,255,255,0.03));
     border: 1px solid var(--border, #2a2a3a);
     border-radius: 16px;
@@ -1511,6 +1562,85 @@
     font-size: 0.9rem;
     color: var(--text-primary, #f1f1f5);
   }
+
+  .content-sections-panel {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-width: 0;
+  }
+
+  .content-sections-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .content-storage-badge {
+    border: 1px solid rgba(99, 102, 241, 0.3);
+    border-radius: 999px;
+    padding: 4px 9px;
+    color: #c4b5fd;
+    font-size: 0.7rem;
+  }
+
+  .content-section-preview {
+    min-width: 0;
+    padding: 14px;
+    border: 1px solid var(--border, #2a2a3a);
+    border-radius: 10px;
+    background: rgba(255,255,255,0.02);
+  }
+
+  .content-section-preview h4 {
+    margin: 0 0 10px;
+    color: var(--text-primary, #f1f1f5);
+    font-size: 0.9rem;
+  }
+
+  .content-section-preview small,
+  .section-content-warnings {
+    color: var(--text-muted, #9ca3af);
+    font-size: 0.72rem;
+  }
+
+  .section-rich-content {
+    max-width: 100%;
+    margin-bottom: 8px;
+    overflow-x: auto;
+    color: var(--text-secondary, #d1d5db);
+  }
+
+  :global(.section-rich-content table) {
+    width: max-content;
+    min-width: 100%;
+    border-collapse: collapse;
+    border-spacing: 0;
+  }
+
+  :global(.section-rich-content th),
+  :global(.section-rich-content td) {
+    min-width: 7rem;
+    padding: 0.55rem 0.75rem;
+    border: 1px solid rgba(148, 163, 184, 0.32);
+    text-align: left;
+    vertical-align: top;
+  }
+
+  :global(.section-rich-content th) {
+    background: rgba(99, 102, 241, 0.12);
+    color: var(--text-primary, #f1f1f5);
+    font-weight: 600;
+  }
+
+  :global(.section-rich-content p) { margin: 0.35rem 0; }
+  :global(.section-rich-content a) { color: #a5b4fc; text-decoration: underline; }
+  :global(.section-rich-content ul),
+  :global(.section-rich-content ol) { padding-left: 1.4rem; }
+  .section-content-warnings { margin: 8px 0 0; padding-left: 18px; }
 
   .confidence-badge {
     font-size: 0.78rem;

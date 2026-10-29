@@ -181,6 +181,7 @@ describe("buildStrapiPayload", () => {
       metaDescription: "SEO description",
       keywords: "ai, business",
       metaRobots: "index, follow",
+      structureData: '{"@type":"Article"}',
       structuredData: '{"@type":"Article"}',
       metaViewport: "width=device-width, initial-scale=1",
       canonicalURL: "https://example.test/article",
@@ -188,6 +189,24 @@ describe("buildStrapiPayload", () => {
     expect(payload.button).toEqual({ link: "https://example.test/start" });
     expect(payload.categoryName).toBe("Digital Transformation");
     expect(payload.time).toBe("5 min read");
+  });
+
+  it("accepts real Strapi field names for structureData, contentNew, and shareImage", () => {
+    const result = DocumentFieldsSchema.safeParse({
+      title: "Real field names example",
+      contentNew: [{ title: "Section 1", content: "Body text" }],
+      defaultSeo: {
+        structureData: { "@type": "Article" },
+        shareImage: "image-share.png",
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.defaultSeo?.structureData).toEqual({ "@type": "Article" });
+      expect(result.data.contentNew).toEqual([{ title: "Section 1", content: "Body text" }]);
+      expect(result.data.defaultSeo?.shareImage).toBe("image-share.png");
+    }
   });
 
   it("omits empty and unresolved values from the CMS payload", () => {

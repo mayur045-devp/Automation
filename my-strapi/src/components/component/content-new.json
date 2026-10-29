@@ -9,7 +9,7 @@
       "type": "string"
     },
     "content": {
-      "type": "blocks"
+      "type": "text"
     }
   },
   "config": {}

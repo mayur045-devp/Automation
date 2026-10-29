@@ -23,6 +23,8 @@ function makeDoc(overrides: Partial<ExtractedDocument> = {}): ExtractedDocument 
     headings: [{ level: 1, text: 'AI in Modern Business' }],
     paragraphs: ['An overview of AI applications.'],
     lists: [],
+    contentSections: [],
+    contentWarnings: [],
     images: [],
     rawText: 'AI in Modern Business. An overview of AI applications. Artificial intelligence...',
     metadata: {

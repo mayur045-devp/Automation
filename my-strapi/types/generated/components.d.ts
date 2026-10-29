@@ -33,7 +33,7 @@ export interface ComponentContentNew extends Struct.ComponentSchema {
     displayName: 'contentNew';
   };
   attributes: {
-    content: Schema.Attribute.Blocks;
+    content: Schema.Attribute.Text;
     title: Schema.Attribute.String;
   };
 }
@@ -109,7 +109,7 @@ export interface SeoSeo extends Struct.ComponentSchema {
       'images' | 'files' | 'videos' | 'audios',
       true
     >;
-    structureData: Schema.Attribute.String;
+    structureData: Schema.Attribute.JSON;
   };
 }
 

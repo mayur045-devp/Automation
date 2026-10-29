@@ -57,7 +57,7 @@
     "contentNew": {
       "type": "component",
       "component": "component.content-new",
-      "repeatable": false
+      "repeatable": true
     },
     "button": {
       "type": "component",

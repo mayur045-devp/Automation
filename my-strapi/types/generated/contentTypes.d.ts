@@ -497,7 +497,7 @@ export interface ApiArticleArticle extends Struct.CollectionTypeSchema {
     buttontitle: Schema.Attribute.String;
     categoryName: Schema.Attribute.String;
     content: Schema.Attribute.RichText;
-    contentNew: Schema.Attribute.Component<'component.content-new', false>;
+    contentNew: Schema.Attribute.Component<'component.content-new', true>;
     coverImage: Schema.Attribute.Media<'images'>;
     createdAt: Schema.Attribute.DateTime;
     createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
@@ -593,6 +593,7 @@ export interface ApiSohamSoham extends Struct.CollectionTypeSchema {
     draftAndPublish: true;
   };
   attributes: {
+    contentNew: Schema.Attribute.Component<'component.content-new', true>;
     createdAt: Schema.Attribute.DateTime;
     createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;

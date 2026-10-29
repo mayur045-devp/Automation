@@ -148,6 +148,45 @@ export async function mapDocumentToCollection(
   const warnings: string[] = [];
 
   for (const field of collection.fields) {
+    if (field.name.toLowerCase() === 'contentnew' && field.type === 'component') {
+      if (
+        !field.supported ||
+        field.componentUid !== 'component.content-new' ||
+        field.repeatable !== true
+      ) {
+        fieldStates[field.name] = {
+          status: 'unresolved',
+          reason: 'contentNew requires the verified repeatable component.content-new schema.',
+        };
+        warnings.push(`${field.name}: ${fieldStates[field.name].reason}`);
+        continue;
+      }
+
+      const components = (doc.contentSections ?? []).map((section) => ({
+        title: section.title,
+        content: section.blocks,
+        contentHtml: section.html,
+      }));
+      if (components.length > 0) {
+        fields[field.name] = components;
+        payload[field.name] = components;
+        fieldStates[field.name] = {
+          status: 'extracted',
+          reason: `Extracted ${components.length} ordered contentNew section(s) from DOCX structure.`,
+          rawValue: `${components.length} section(s)`,
+        };
+        for (const section of doc.contentSections) {
+          warnings.push(...section.warnings);
+        }
+      } else {
+        fieldStates[field.name] = {
+          status: 'missing',
+          reason: 'No section boundaries were detected in the document.',
+        };
+      }
+      continue;
+    }
+
     if (!field.supported) {
       fieldStates[field.name] = {
         status: "unresolved",

@@ -44,7 +44,7 @@ The mappings below use the current `my-strapi/src/api/article/content-types/arti
 | Date | `date` | `date` | Accept only a real `YYYY-MM-DD` date |
 | Authordata | `authordata` | `Authordata.authorName` | Map a provided author name to the component; no relation or media identifier is inferred |
 | Category Name | `categoryname` | `categoryName` (string) | Map as a scalar |
-| Content New | `contentnew` | `contentNew` (component with Blocks) | Retain for review; do not invent a Blocks structure from plain text |
+| Content New | DOCX sections | `contentNew` (repeatable `component.content-new`) | One ordered component per detected section; Blocks for rich text and `contentHtml` for ordered table-capable HTML |
 | Button | `button` | `button.link` | Map only URL/path-shaped values |
 | Button Title | `buttontitle` | `buttontitle` (string) | Map as a scalar |
 | Button Subtitle | `buttonsubtitle` | `buttonsubtitle` (string) | Map as a scalar |
@@ -55,6 +55,16 @@ The mappings below use the current `my-strapi/src/api/article/content-types/arti
 | Popularity Name | `popularityname` | No attribute in current Article schema | Retain for review; exclude from CMS payload |
 
 These are explicit mappings, not automatic camel-case conversions. The Strapi schema currently contains no declared required attributes, so the import does not invent or enforce additional required values.
+
+## Structured sections, Blocks, and tables
+
+The DOCX converter uses Mammoth's semantic HTML output to preserve document order, paragraphs, headings, lists, links, and actual table rows/cells. Section boundaries are recognized from Word heading styles, standalone bold paragraphs, and Markdown heading markers; section titles are not hardcoded. Each section becomes one item in the repeatable `contentNew` component array.
+
+`contentNew.content` remains a Strapi Blocks field. Paragraphs, headings, lists, supported inline formatting, and safe hyperlinks are serialized as Strapi Blocks nodes and validated before the REST request. Blocks has no table node, so an optional additive `contentHtml` text attribute stores the section's complete ordered HTML (including paragraphs around one or more semantic `<table>` elements). Existing `content` data is not changed. The import preview and reusable `ContentNewRenderer.svelte` sanitize HTML against an explicit tag/attribute/URL allowlist; tables scroll horizontally on narrow screens.
+
+The expected REST payload remains Strapi 5's `{ "data": { ... } }` envelope, with `contentNew: [{ "title": "...", "content": [...], "contentHtml": "..." }]`. Component mapping is enabled only for the verified `component.content-new` UID when the parent attribute is repeatable. A collection without that exact schema displays detected sections as unmapped and cannot be imported until they are mapped. Confirm re-fetches the created entry with the component populated and compares the saved component values with the approved preview.
+
+The repository contains the import dashboard and a reusable renderer, but no public-site content page or CMS-backed route. A production website must consume `contentHtml` through the renderer (or an equivalent sanitized renderer) to display these tables. The local schema file and generated type were updated only after explicit approval; no live CMS write or migration was performed. Restart Strapi and verify the component schema before importing.
 
 ## Preview request and response
 

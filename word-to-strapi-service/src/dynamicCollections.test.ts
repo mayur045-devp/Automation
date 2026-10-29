@@ -123,6 +123,56 @@ describe('contentTypeToImportCollection', () => {
     expect(catField?.supported).toBe(false);
     expect(catField?.note).toMatch(/relation/i);
   });
+
+  it('only enables verified repeatable contentNew components', () => {
+    const componentSchemas = new Map([['component.content-new', {
+      title: { type: 'string' },
+      content: { type: 'blocks' },
+      contentHtml: { type: 'text' },
+    }]]);
+    const collection = contentTypeToImportCollection(makeContentType({
+      attributes: {
+        title: { type: 'string' },
+        contentNew: {
+          type: 'component',
+          component: 'component.content-new',
+          repeatable: true,
+        },
+      },
+    }), componentSchemas);
+    expect(collection.fields.find((field) => field.name === 'contentNew')).toMatchObject({
+      supported: true,
+      componentUid: 'component.content-new',
+      repeatable: true,
+      sourceField: 'contentSections',
+    });
+
+    const invalid = contentTypeToImportCollection(makeContentType({
+      attributes: {
+        contentNew: {
+          type: 'component',
+          component: 'component.content-new',
+          repeatable: false,
+        },
+      },
+    }));
+    expect(invalid.fields.find((field) => field.name === 'contentNew')?.supported).toBe(false);
+
+    const wrongChildType = contentTypeToImportCollection(makeContentType({
+      attributes: {
+        contentNew: {
+          type: 'component',
+          component: 'component.content-new',
+          repeatable: true,
+        },
+      },
+    }), new Map([['component.content-new', {
+      title: { type: 'string' },
+      content: { type: 'blocks' },
+      contentHtml: { type: 'string' },
+    }]]));
+    expect(wrongChildType.fields.find((field) => field.name === 'contentNew')?.supported).toBe(false);
+  });
 });
 
 // ── Integration test: fetchDynamicCollections ──────────────────────────────────
@@ -214,6 +264,52 @@ describe('fetchDynamicCollections', () => {
     expect(result!.every((c) => c.uid.startsWith('api::'))).toBe(true);
     expect(result!.find((c) => c.uid === 'api::soham.soham')?.displayName).toBe('Soham');
     expect(result!.find((c) => c.uid === 'api::homepage.homepage')?.kind).toBe('singleType');
+  });
+
+  it('verifies contentNew child field names and types before enabling dynamic mapping', async () => {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/components')) {
+        return new Response(JSON.stringify({
+          data: [{
+            uid: 'component.content-new',
+            schema: {
+              attributes: {
+                title: { type: 'string' },
+                content: { type: 'blocks' },
+                contentHtml: { type: 'text' },
+              },
+            },
+          }],
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({
+        data: [{
+          uid: 'api::soham.soham',
+          schema: {
+            kind: 'collectionType',
+            displayName: 'Soham',
+            singularName: 'soham',
+            pluralName: 'sohams',
+            attributes: {
+              contentNew: {
+                type: 'component',
+                component: 'component.content-new',
+                repeatable: true,
+              },
+            },
+          },
+        }],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }) as typeof fetch;
+
+    const collections = await fetchDynamicCollections('http://localhost:1337', 'valid-admin-token');
+    expect(collections?.[0].fields[0]).toMatchObject({
+      name: 'contentNew',
+      supported: true,
+      componentUid: 'component.content-new',
+      repeatable: true,
+    });
   });
 
   it('returns null on network error without throwing', async () => {

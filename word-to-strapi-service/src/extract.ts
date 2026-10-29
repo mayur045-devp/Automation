@@ -1,6 +1,11 @@
 import mammoth from "mammoth";
 import path from "path";
 import {
+  extractContentSections,
+  validateContentSections,
+  type ContentSection,
+} from "./contentNew";
+import {
   DOCUMENT_FIELD_KEYS,
   DOCUMENT_FIELD_MAPPINGS,
   slugify,
@@ -31,6 +36,8 @@ export interface ExtractedDocument {
   headings: Array<{ level: number; text: string }>;
   paragraphs: string[];
   lists: string[][];
+  contentSections: ContentSection[];
+  contentWarnings: string[];
   images: ExtractedImage[];
   rawText: string;
   metadata: {
@@ -488,7 +495,20 @@ export async function extractDocx(
     },
   );
 
+  const conversionErrors = result.messages
+    .filter((message) => message.type === "error")
+    .map((message) => message.message);
+  if (conversionErrors.length) {
+    throw new Error(`DOCX conversion failed: ${conversionErrors.join("; ")}`);
+  }
   const html = result.value;
+  const contentSections = extractContentSections(html);
+  if (!validateContentSections(contentSections)) {
+    throw new Error("DOCX content sections failed Blocks/HTML conversion validation.");
+  }
+  const contentWarnings = result.messages
+    .filter((message) => message.type === "warning")
+    .map((message) => message.message);
   annotateImageLocations(html, images);
 
   const parsedFields: Partial<DocumentFields> = {};
@@ -863,6 +883,8 @@ export async function extractDocx(
     headings,
     paragraphs,
     lists,
+    contentSections,
+    contentWarnings,
     images,
     rawText,
     metadata: {

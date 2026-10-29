@@ -23,6 +23,8 @@ function createMockDoc(overrides: Partial<ExtractedDocument> = {}): ExtractedDoc
     headings: [],
     paragraphs: [],
     lists: [],
+    contentSections: [],
+    contentWarnings: [],
     images: [],
     rawText: 'Default Title Default Description',
     metadata: {

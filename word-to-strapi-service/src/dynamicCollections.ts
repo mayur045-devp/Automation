@@ -40,6 +40,12 @@ interface StrapiFormattedContentType {
   attributes?: Record<string, StrapiAttributeInfo>;
 }
 
+interface StrapiFormattedComponent {
+  uid: string;
+  schema?: { attributes?: Record<string, StrapiAttributeInfo> };
+  attributes?: Record<string, StrapiAttributeInfo>;
+}
+
 export interface StrapiAttributeInfo {
   type: string;
   required?: boolean;
@@ -60,6 +66,8 @@ export interface DynamicImportField {
   multiple?: boolean;
   allowedTypes?: string[];
   sourceField?: string;
+  componentUid?: string;
+  repeatable?: boolean;
   note?: string;
 }
 
@@ -110,7 +118,11 @@ const DOCUMENT_FIELD_SOURCE_BY_NAME: Record<string, string> = {
 /**
  * Map a Strapi attribute to an importable field descriptor.
  */
-function attributeToField(name: string, attr: StrapiAttributeInfo): DynamicImportField {
+function attributeToField(
+  name: string,
+  attr: StrapiAttributeInfo,
+  componentSchemas: ReadonlyMap<string, Record<string, StrapiAttributeInfo>>,
+): DynamicImportField {
   const type = attr.type;
   const supported = SUPPORTED_SCALAR_TYPES.has(type) || type === 'media';
   const field: DynamicImportField = {
@@ -138,7 +150,22 @@ function attributeToField(name: string, attr: StrapiAttributeInfo): DynamicImpor
     field.sourceField = DOCUMENT_FIELD_SOURCE_BY_NAME[lower] ?? 'date';
     field.supported = true;
   } else if (type === 'component') {
-    field.note = `Component field "${name}" — structured mapping may be limited.`;
+    field.componentUid = attr.component;
+    field.repeatable = attr.repeatable ?? false;
+    if (
+      lower === 'contentnew' &&
+      attr.component === 'component.content-new' &&
+      attr.repeatable === true &&
+      isVerifiedContentNewComponent(componentSchemas.get(attr.component))
+    ) {
+      field.supported = true;
+      field.sourceField = 'contentSections';
+      field.note = 'Mapped to verified repeatable content-new components.';
+    } else {
+      field.note = lower === 'contentnew'
+        ? 'Component UID, repeatability, or child fields do not match the verified content-new schema.'
+        : `Component field "${name}" — structured mapping may be limited.`;
+    }
   } else if (type === 'relation') {
     field.note = 'Relations require explicit resolution; document text is never treated as an ID.';
   }
@@ -149,9 +176,12 @@ function attributeToField(name: string, attr: StrapiAttributeInfo): DynamicImpor
 /**
  * Convert a Strapi content type definition to a DynamicImportCollection.
  */
-export function contentTypeToImportCollection(ct: StrapiContentTypeInfo): DynamicImportCollection {
+export function contentTypeToImportCollection(
+  ct: StrapiContentTypeInfo,
+  componentSchemas: ReadonlyMap<string, Record<string, StrapiAttributeInfo>> = new Map(),
+): DynamicImportCollection {
   const fields: DynamicImportField[] = Object.entries(ct.attributes).map(([name, attr]) =>
-    attributeToField(name, attr)
+    attributeToField(name, attr, componentSchemas)
   );
 
   // Detect the best duplicate-check field (title > name > first supported string field)
@@ -181,6 +211,14 @@ export function contentTypeToImportCollection(ct: StrapiContentTypeInfo): Dynami
     fields,
     dynamic: true,
   };
+}
+
+function isVerifiedContentNewComponent(
+  attributes: Record<string, StrapiAttributeInfo> | undefined,
+): boolean {
+  return attributes?.title?.type === 'string' &&
+    attributes.content?.type === 'blocks' &&
+    attributes.contentHtml?.type === 'text';
 }
 
 function normalizeContentType(record: StrapiFormattedContentType): StrapiContentTypeInfo | null {
@@ -235,8 +273,8 @@ export async function fetchDynamicCollections(
     const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
     let res: Response;
+    const fetchFn = (globalThis.fetch ?? (await import('node-fetch')).default) as typeof fetch;
     try {
-      const fetchFn = (globalThis.fetch ?? (await import('node-fetch')).default) as typeof fetch;
       res = await fetchFn(`${base}/api/content-type-builder/content-types`, {
         headers: {
           Authorization: `Bearer ${adminJwt}`,
@@ -264,7 +302,50 @@ export async function fetchDynamicCollections(
       (ct.kind === 'collectionType' || ct.kind === 'singleType')
     );
 
-    return userTypes.map(contentTypeToImportCollection);
+    const usesContentNew = userTypes.some((type) =>
+      Object.entries(type.attributes).some(([name, attribute]) =>
+        name.toLowerCase() === 'contentnew' &&
+        attribute.type === 'component' &&
+        attribute.component === 'component.content-new' &&
+        attribute.repeatable === true,
+      ),
+    );
+    const componentSchemas = new Map<string, Record<string, StrapiAttributeInfo>>();
+    if (usesContentNew) {
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+        let componentResponse: Response;
+        try {
+          componentResponse = await fetchFn(
+            `${base}/api/content-type-builder/components`,
+            {
+              headers: {
+                Authorization: `Bearer ${adminJwt}`,
+                'Content-Type': 'application/json',
+              },
+              signal: controller.signal,
+            },
+          );
+        } finally {
+          clearTimeout(timer);
+        }
+        if (componentResponse.ok) {
+          const componentData = await componentResponse.json() as { data?: StrapiFormattedComponent[] };
+          for (const component of componentData.data ?? []) {
+            const attributes = component.schema?.attributes ?? component.attributes;
+            if (component.uid && attributes) componentSchemas.set(component.uid, attributes);
+          }
+        } else {
+          console.warn(`[dynamicCollections] Component schema verification returned ${componentResponse.status}; contentNew fields will remain unsupported.`);
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(`[dynamicCollections] Component schema verification failed; contentNew fields will remain unsupported: ${message}`);
+      }
+    }
+
+    return userTypes.map((type) => contentTypeToImportCollection(type, componentSchemas));
   } catch (err: any) {
     const msg = err?.name === 'AbortError' ? 'timeout' : err?.message ?? String(err);
     console.warn(`[dynamicCollections] Failed to fetch dynamic collections: ${msg}`);

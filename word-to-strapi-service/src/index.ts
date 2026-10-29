@@ -182,11 +182,12 @@ app.post(
 
       // Each supported collection uses its verified target schema for extraction and mapping.
       let aiResult: AiMappingResult | CollectionMappingResult;
+      let collectionMapping: CollectionMappingResult | null = null;
       if (collection.mapper === 'article') {
         const articleResult = await mapDocumentToArticle(doc, GEMINI_API_KEY, GEMINI_MODEL);
-        const collectionResult = await mapDocumentToCollection(doc, collection, '', GEMINI_MODEL);
+        collectionMapping = await mapDocumentToCollection(doc, collection, '', GEMINI_MODEL);
         const extraPayload = Object.fromEntries(
-          Object.entries(collectionResult.payload)
+          Object.entries(collectionMapping.payload)
             .filter(([name]) => !Object.prototype.hasOwnProperty.call(articleResult.payload, name)),
         );
         aiResult = {
@@ -194,7 +195,8 @@ app.post(
           payload: { ...articleResult.payload, ...extraPayload } as typeof articleResult.payload,
         };
       } else {
-        aiResult = await mapDocumentToCollection(doc, collection, GEMINI_API_KEY, GEMINI_MODEL);
+        collectionMapping = await mapDocumentToCollection(doc, collection, GEMINI_API_KEY, GEMINI_MODEL);
+        aiResult = collectionMapping;
       }
 
       const schemaDiff = compareDocumentSchema(doc, collection);
@@ -246,6 +248,28 @@ app.post(
         req.file.originalname,
         doc,
       );
+      const contentNewField = collection.fields.find((field) =>
+        field.name.toLowerCase() === 'contentnew' &&
+        field.type === 'component' &&
+        field.componentUid === 'component.content-new' &&
+        field.repeatable === true &&
+        field.supported,
+      );
+      const unmappedSections = doc.contentSections.length > 0
+        ? contentNewField
+          ? []
+          : doc.contentSections.map((section) => section.title)
+        : contentNewField && doc.content
+          ? ['Unsectioned document body content']
+          : [];
+      const previewWarnings = [
+        ...aiResult.warnings,
+        ...(collectionMapping?.warnings ?? []),
+        ...doc.contentWarnings,
+        ...(unmappedSections.length
+          ? ['Detected content sections cannot be imported because the selected collection does not expose a verified repeatable contentNew component.']
+          : []),
+      ];
 
       res.json({
         importId,
@@ -256,12 +280,18 @@ app.post(
             apiName: collection.apiName,
           },
           payload: validation.data,
-          fields: aiResult.fields,
-          fieldStates: aiResult.fieldStates,
+          fields: { ...aiResult.fields, ...(collectionMapping?.fields ?? {}) },
+          fieldStates: { ...aiResult.fieldStates, ...(collectionMapping?.fieldStates ?? {}) },
           missingFields: aiResult.missingFields,
-          unmappedFields: aiResult.unmappedFields,
+          unmappedFields: [
+            ...aiResult.unmappedFields,
+            ...(collectionMapping?.unmappedFields ?? []),
+          ],
+          contentSections: doc.contentSections,
+          contentWarnings: doc.contentWarnings,
+          unmappedSections,
           ambiguities: aiResult.ambiguities,
-          warnings: aiResult.warnings,
+          warnings: [...new Set(previewWarnings)],
           confidence: aiResult.confidence,
           imageCount: doc.images.length,
           images: imagePreview,
@@ -414,9 +444,7 @@ app.post('/api/import/confirm', requireApiKey, async (req: Request, res: Respons
     }
 
     // Phase 5: create draft (drafts only, never published)
-    const created = collection.mapper === 'article'
-      ? await strapi.createDraft(validation.data as import('./schema').ArticlePayload)
-      : await strapi.createDraftForCollection(collection, validation.data);
+    const created = await strapi.createDraftForCollection(collection, validation.data);
     createdDocumentId = created.documentId;
     createdAdminLink = created.adminLink;
     console.log(`[confirm] Created ${collection.uid} draft documentId=${created.documentId}`);
