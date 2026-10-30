@@ -1,0 +1,14 @@
+{
+  "kind": "collectionType",
+  "collectionName": "elite_hacekrs",
+  "info": {
+    "singularName": "elite-hacekr",
+    "pluralName": "elite-hacekrs",
+    "displayName": "Elite_hacekr"
+  },
+  "options": {
+    "draftAndPublish": true
+  },
+  "pluginOptions": {},
+  "attributes": {}
+}

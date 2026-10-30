@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { isValidIsoDate } from './schema';
+import { validateArticlePayload, StrapiArticlePayloadSchema } from './schema';
 import type { DynamicImportCollection } from './dynamicCollections';
 
 export interface ImportField {
@@ -102,19 +102,7 @@ const VERIFIED_COLLECTIONS: readonly ImportCollection[] = [
       { name: 'buttonsubtitle', type: 'string', required: false, supported: true, sourceField: 'buttonsubtitle' },
       { name: 'time', type: 'string', required: false, supported: true, sourceField: 'time' },
       { name: 'tital_blog_category', type: 'relation', required: false, supported: false, note: 'Relations require explicit resolution; document text is never treated as an ID.' },
-      {
-        name: 'contentNew',
-        type: 'component',
-        required: false,
-        supported: true,
-        componentUid: 'component.content-new',
-        repeatable: true,
-        sourceField: 'contentSections',
-        componentFields: [
-          { name: 'title', type: 'string', required: false, supported: true },
-          { name: 'content', type: 'text', required: false, supported: true },
-        ],
-      },
+      { name: 'contentNew', type: 'component', required: false, supported: true, sourceField: 'contentnew', note: 'Repeatable component entries with title and plain text content.' },
       { name: 'polldata', type: 'component', required: false, supported: false },
       { name: 'Quizedata', type: 'component', required: false, supported: false },
     ],
@@ -236,9 +224,97 @@ export function validateImportPayload(
   collection: ImportCollection,
   payload: unknown,
 ): { success: true; data: Record<string, unknown> } | { success: false; errors: string[] } {
-  if (!isRecord(payload)) return { success: false, errors: ['Payload must be an object.'] };
-  const shape = schemaForFields(collection.fields);
-  const result = z.object(shape).strict().safeParse(payload);
+  if (collection.mapper === 'article') {
+    if (!isRecord(payload)) return { success: false, errors: ['Payload must be an object.'] };
+    const articleKeys = new Set(Object.keys(StrapiArticlePayloadSchema.shape));
+    const extraFields = Object.keys(payload).filter((name) => !articleKeys.has(name));
+    const extraDescriptors = extraFields.map((name) =>
+      collection.fields.find((field) => field.name === name && field.supported && field.type !== 'media'));
+    const unknownFields = extraFields.filter((_name, index) => !extraDescriptors[index]);
+    if (unknownFields.length > 0) {
+      return {
+        success: false,
+        errors: unknownFields.map((name) => {
+          const proposedType = inferTypeName(payload[name]);
+          return `Unsupported field: ${name} (proposed type: ${proposedType}). Remove it before sending the payload to Strapi.`;
+        }),
+      };
+    }
+
+    const articlePayload = Object.fromEntries(
+      Object.entries(payload).filter(([name]) => articleKeys.has(name)),
+    );
+    const articleResult = validateArticlePayload(articlePayload);
+    if (!articleResult.success) {
+      return {
+        success: false,
+        errors: articleResult.errors.map((issue) => `${issue.path.join('.')}: ${issue.message}`),
+      };
+    }
+
+    const extraShape: Record<string, z.ZodTypeAny> = {};
+    for (const field of extraDescriptors) {
+      if (!field) continue;
+      const schema = scalarFieldSchema(field);
+      if (schema) extraShape[field.name] = schema;
+    }
+    const extraResult = z.object(extraShape).strict().safeParse(
+      Object.fromEntries(extraFields.map((name) => [name, payload[name]])),
+    );
+    if (!extraResult.success) {
+      return {
+        success: false,
+        errors: extraResult.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`),
+      };
+    }
+
+    const data: Record<string, unknown> = { ...articleResult.data, ...extraResult.data };
+    const missingRequired = collection.fields
+      .filter((field) => field.required && field.type !== 'media')
+      .filter((field) => {
+        const value = data[field.name];
+        return value === undefined || value === null || (typeof value === 'string' && !value.trim());
+      })
+      .map((field) => `Missing required field: ${field.name}`);
+    return missingRequired.length
+      ? { success: false, errors: missingRequired }
+      : { success: true, data };
+  }
+
+  const shape: Record<string, z.ZodTypeAny> = {};
+  for (const field of collection.fields) {
+    if (!field.supported || field.type === 'media') continue;
+    const schema = scalarFieldSchema(field);
+    if (schema) shape[field.name] = schema;
+  }
+
+  function scalarFieldSchema(field: ImportField): z.ZodTypeAny | undefined {
+    if (['string', 'text', 'richtext', 'date', 'datetime', 'uid'].includes(field.type)) {
+      return z.string().nullable().optional();
+    }
+    if (['integer', 'float', 'decimal'].includes(field.type)) {
+      return z.number().nullable().optional();
+    }
+    if (field.type === 'boolean') return z.boolean().nullable().optional();
+    if (field.type === 'email') return z.string().email().nullable().optional();
+    return undefined;
+  }
+
+  function inferTypeName(value: unknown): string {
+    if (Array.isArray(value)) return `array<${inferTypeName(value[0])}>`;
+    if (value === null) return 'null';
+    if (typeof value === 'string') return 'string';
+    if (typeof value === 'number') return 'number';
+    if (typeof value === 'boolean') return 'boolean';
+    if (typeof value === 'object') return 'object';
+    return typeof value;
+  }
+
+  function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+  }
+
+  const result = z.object(shape).safeParse(payload);
   if (!result.success) {
     return {
       success: false,

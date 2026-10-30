@@ -90,8 +90,7 @@ export interface DynamicImportCollection {
 }
 
 const SUPPORTED_SCALAR_TYPES = new Set([
-  'string', 'text', 'richtext', 'email', 'uid', 'date', 'datetime', 'boolean', 'integer', 'float', 'decimal',
-  'enumeration', 'json', 'blocks',
+  'string', 'text', 'richtext', 'email', 'uid', 'date', 'datetime', 'boolean', 'integer', 'float', 'decimal', 'blocks',
 ]);
 
 const DOCUMENT_FIELD_SOURCE_BY_NAME: Record<string, string> = {
@@ -133,7 +132,7 @@ function attributeToField(
   componentStack: readonly string[] = [],
 ): DynamicImportField {
   const type = attr.type;
-  const supported = SUPPORTED_SCALAR_TYPES.has(type) || type === 'media';
+  const supported = SUPPORTED_SCALAR_TYPES.has(type) || type === 'media' || name === 'contentNew';
   const field: DynamicImportField = {
     name,
     type,

@@ -2,3 +2,9 @@ node_modules/
 dist/
 .env
 *.docx
+
+project-understanding
+project-understanding/
+*project-understanding*
+PROJECT_TECHNICAL_DOCUMENTATION.md
+**/PROJECT_TECHNICAL_DOCUMENTATION.md

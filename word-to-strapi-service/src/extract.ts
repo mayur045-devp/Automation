@@ -11,6 +11,7 @@ import {
   DOCUMENT_FIELD_KEYS,
   DOCUMENT_FIELD_MAPPINGS,
   slugify,
+  parseSectionsFromText,
 } from "./schema";
 import type {
   DocumentFields,
@@ -51,6 +52,7 @@ export interface ExtractedDocument {
   parsedFields: Partial<DocumentFields>;
   fieldStates: FieldStates;
   unmappedFields: Array<{ label: string; value: string }>;
+  ambiguousHeadings?: string[];
 }
 
 /**
@@ -138,12 +140,12 @@ export function normalizeValue(val: string): string | null {
 export function parseLabeledField(
   text: string,
 ): { label: string; value: string } | null {
-  const trimmed = text.trim();
-  const match = trimmed.match(/^([A-Za-z0-9\s\.\[\]]+?)\s*([:—–-])\s*(.*)$/);
+  const clean = text.replace(/^\*\*|\*\*$/g, "").trim();
+  const match = clean.match(/^([A-Za-z0-9\s\.\[\]]+?)\s*([:—–-])\s*(.*)$/);
   if (!match) return null;
   const label = normalizeKey(match[1]);
   if (match[2] !== ":" && !FIELD_ALIASES[label]) return null;
-  const value = match[3].trim();
+  const value = match[3].replace(/^\*\*|\*\*$/g, "").trim();
   return { label, value };
 }
 
@@ -164,7 +166,7 @@ function classifyFieldValue(
   rawValue: string,
 ): { state: FieldState; value: string | null } {
   const value = rawValue.trim();
-  const imageMatch = value.match(/^\[IMAGE_(\d+)\]$/i);
+  const imageMatch = value.match(/\[IMAGE_(\d+)\]/i);
   if (key === "cover" && imageMatch) {
     return {
       state: {
@@ -234,8 +236,8 @@ function classifyFieldValue(
   if (key === "contentnew") {
     return {
       state: {
-        status: "requires_review",
-        reason: "The target component expects structured Blocks content.",
+        status: "extracted",
+        reason: "Mapped to structured Blocks content in Strapi.",
         rawValue,
       },
       value,
@@ -348,9 +350,9 @@ function assignField(
     if (seoKey === "keywords") {
       seo.keywords = value
         ? value
-            .split(/[,;]\s*/)
-            .map((part) => part.trim())
-            .filter(Boolean)
+          .split(/[,;]\s*/)
+          .map((part) => part.trim())
+          .filter(Boolean)
         : [];
     } else {
       seo[seoKey] = value;
@@ -400,9 +402,9 @@ function assignField(
       fields.blogcategories =
         value && value.includes(",")
           ? value
-              .split(",")
-              .map((part) => part.trim())
-              .filter(Boolean)
+            .split(",")
+            .map((part) => part.trim())
+            .filter(Boolean)
           : value;
       break;
     case "time":
@@ -502,6 +504,285 @@ function isElement(node: AnyNode): node is Element {
 }
 
 /**
+ * Only interpret Title/Content rows as repeatable contentNew items when the
+ * table is explicitly under a Contentnew heading. Other tables in the article
+ * template also contain a Title row (the article title), and must stay metadata.
+ */
+function parseContentNewTable(html: string): {
+  pairs: Array<{ key: string; value: string }>;
+  tableHtml: string;
+} | null {
+  const tableRegex = /<table[^>]*>.*?<\/table>/gis;
+  let match: RegExpExecArray | null;
+  while ((match = tableRegex.exec(html)) !== null) {
+    const before = stripHtml(html.slice(0, match.index)).trim();
+    const precedingLabel = before.split(/\s+/).slice(-5).join(" ");
+    if (!/(?:\bcontent\s*new\b|\bcontentnew\b)\s*$/i.test(precedingLabel)) continue;
+    const tableHtml = match[0];
+    const pairs = parseTables(tableHtml);
+    if (pairs.some(({ key }) => ["title", "sectiontitle"].includes(normalizeKey(key))) &&
+        pairs.some(({ key }) => normalizeKey(key) === "content")) {
+      return { pairs, tableHtml };
+    }
+  }
+  return null;
+}
+
+export interface ExtractedSectionItem {
+  title: string;
+  content: string;
+}
+
+export function extractTableSections(
+  pairs: Array<{ key: string; value: string }>,
+): ExtractedSectionItem[] {
+  const sections: ExtractedSectionItem[] = [];
+  let currentTitle: string | null = null;
+  let currentContent: string[] = [];
+
+  const flush = () => {
+    if (currentTitle && currentContent.length > 0) {
+      sections.push({
+        title: currentTitle,
+        content: currentContent.join("\n\n"),
+      });
+      currentTitle = null;
+      currentContent = [];
+    }
+  };
+
+  for (const { key, value } of pairs) {
+    const norm = normalizeKey(key);
+    if (norm === "title" || norm === "sectiontitle") {
+      flush();
+      currentTitle = value.trim();
+    } else if (norm === "content" && currentTitle) {
+      currentContent.push(value.trim());
+    } else if (currentTitle && value.trim()) {
+      currentContent.push(`${key}: ${value.trim()}`);
+    }
+  }
+
+  flush();
+  return sections;
+}
+
+type DocElement =
+  | { type: "heading"; level: number; text: string }
+  | { type: "paragraph"; text: string }
+  | { type: "list"; items: string[] };
+
+function detectExplicitSections(
+  elements: DocElement[],
+  usedIndices: Set<number>,
+  titleElemIndex: number = -1,
+  docTitle?: string | null,
+  docDescription?: string | null,
+): {
+  introductoryContent: string | null;
+  sections: ExtractedSectionItem[];
+  usedElementIndices: Set<number>;
+} | null {
+  const titleIndices: number[] = [];
+  for (let i = 0; i < elements.length; i++) {
+    if (usedIndices.has(i)) continue;
+    const elem = elements[i];
+    if (elem.type === "paragraph") {
+      const match = elem.text.match(/(?:^|\r?\n|\*\*)\s*(?:Title|Section Title)\s*[:—–-]\s*/i);
+      if (match) {
+        titleIndices.push(i);
+      }
+    }
+  }
+
+  if (titleIndices.length === 0) return null;
+
+  // Single paragraph with inline sections (e.g. "**Title: Choosing the lab** **Content: **... **Title: The first request**...")
+  if (titleIndices.length === 1) {
+    const singleElem = elements[titleIndices[0]];
+    if (singleElem.type === "paragraph") {
+      const parsed = parseSectionsFromText(singleElem.text);
+      if (parsed.length >= 2) {
+        const used = new Set(usedIndices);
+        used.add(titleIndices[0]);
+        const introParts: string[] = [];
+        for (let j = 0; j < titleIndices[0]; j++) {
+          if (!usedIndices.has(j) && j > titleElemIndex) {
+            const e = elements[j];
+            const textContent = e.type === "list" ? e.items.join(" ") : e.text;
+            if (isTemplateArtifact(textContent)) continue;
+            if (textContent === docTitle || textContent === docDescription) continue;
+            if (e.type === "paragraph") introParts.push(e.text);
+            else if (e.type === "heading") introParts.push(`${"#".repeat(e.level)} ${e.text}`);
+            else if (e.type === "list") introParts.push(e.items.map((item) => `- ${item}`).join("\n"));
+            used.add(j);
+          }
+        }
+        return {
+          introductoryContent: introParts.length > 0 ? introParts.join("\n\n") : null,
+          sections: parsed,
+          usedElementIndices: used,
+        };
+      }
+    }
+  }
+
+  const used = new Set(usedIndices);
+  const sections: ExtractedSectionItem[] = [];
+  const introParts: string[] = [];
+
+  const firstTitleIdx = titleIndices[0];
+  for (let i = 0; i < firstTitleIdx; i++) {
+    if (!usedIndices.has(i) && i > titleElemIndex) {
+      const e = elements[i];
+      const textContent = e.type === "list" ? e.items.join(" ") : e.text;
+      if (isTemplateArtifact(textContent)) continue;
+      if (textContent === docTitle || textContent === docDescription) continue;
+      if (e.type === "paragraph") introParts.push(e.text);
+      else if (e.type === "heading") introParts.push(`${"#".repeat(e.level)} ${e.text}`);
+      else if (e.type === "list") introParts.push(e.items.map((item) => `- ${item}`).join("\n"));
+      used.add(i);
+    }
+  }
+
+  for (let t = 0; t < titleIndices.length; t++) {
+    const currentIdx = titleIndices[t];
+    const nextIdx = t + 1 < titleIndices.length ? titleIndices[t + 1] : elements.length;
+    const titleElem = elements[currentIdx];
+    used.add(currentIdx);
+
+    let title = "";
+    let firstBodyPart = "";
+
+    if (titleElem.type === "paragraph") {
+      const parsed = parseSectionsFromText(titleElem.text);
+      if (parsed.length > 0) {
+        title = parsed[0].title;
+        firstBodyPart = parsed[0].content;
+      } else {
+        const m = titleElem.text.match(/(?:^|\r?\n|\*\*)\s*(?:Title|Section Title)\s*[:—–-]\s*(.*?)(?:\*\*|$)([\s\S]*)/i);
+        if (m) {
+          title = m[1].replace(/^\*\*|\*\*$/g, "").trim();
+          firstBodyPart = m[2].replace(/^(?:\*\*)?\s*Content\s*[:—–-]\s*(?:\*\*)?/i, "").replace(/^\*\*|\*\*$/g, "").trim();
+        }
+      }
+    }
+
+    const contentParts: string[] = [];
+    if (firstBodyPart) contentParts.push(firstBodyPart);
+
+    for (let j = currentIdx + 1; j < nextIdx; j++) {
+      if (usedIndices.has(j)) continue;
+      const elem = elements[j];
+      used.add(j);
+      if (elem.type === "paragraph") {
+        const text = elem.text.replace(/^(?:\*\*)?\s*Content\s*[:—–-]\s*(?:\*\*)?/i, "").trim();
+        if (text) contentParts.push(text);
+      } else if (elem.type === "heading") {
+        contentParts.push(`${"#".repeat(elem.level)} ${elem.text}`);
+      } else if (elem.type === "list") {
+        for (const item of elem.items) {
+          contentParts.push(`- ${item}`);
+        }
+      }
+    }
+
+    if (title) {
+      sections.push({
+        title,
+        content: contentParts.join("\n\n"),
+      });
+    }
+  }
+
+  return sections.length > 0
+    ? {
+      introductoryContent: introParts.length > 0 ? introParts.join("\n\n") : null,
+      sections,
+      usedElementIndices: used,
+    }
+    : null;
+}
+
+function detectHeadingSections(
+  elements: DocElement[],
+  usedIndices: Set<number>,
+  titleElemIndex: number,
+): {
+  introductoryContent: string | null;
+  sections: ExtractedSectionItem[];
+  usedElementIndices: Set<number>;
+  ambiguousHeadings: string[];
+} | null {
+  const headingIndices: number[] = [];
+  for (let i = 0; i < elements.length; i++) {
+    if (usedIndices.has(i) || i <= titleElemIndex) continue;
+    const elem = elements[i];
+    if (elem.type === "heading" && !isTemplateArtifact(elem.text)) {
+      headingIndices.push(i);
+    }
+  }
+
+  if (headingIndices.length === 0) return null;
+
+  const used = new Set(usedIndices);
+  const sections: ExtractedSectionItem[] = [];
+  const introParts: string[] = [];
+  const ambiguousHeadings: string[] = [];
+
+  const firstHeadingIdx = headingIndices[0];
+  for (let i = titleElemIndex + 1; i < firstHeadingIdx; i++) {
+    if (!usedIndices.has(i)) {
+      const e = elements[i];
+      if (e.type === "paragraph") introParts.push(e.text);
+      else if (e.type === "list") introParts.push(e.items.map((item) => `- ${item}`).join("\n"));
+      used.add(i);
+    }
+  }
+
+  for (let h = 0; h < headingIndices.length; h++) {
+    const currentIdx = headingIndices[h];
+    const nextIdx = h + 1 < headingIndices.length ? headingIndices[h + 1] : elements.length;
+    const headingElem = elements[currentIdx] as { type: "heading"; level: number; text: string };
+    used.add(currentIdx);
+
+    const contentParts: string[] = [];
+    for (let j = currentIdx + 1; j < nextIdx; j++) {
+      if (usedIndices.has(j)) continue;
+      const elem = elements[j];
+      used.add(j);
+      if (elem.type === "paragraph") {
+        contentParts.push(elem.text);
+      } else if (elem.type === "heading") {
+        contentParts.push(`${"#".repeat(elem.level)} ${elem.text}`);
+      } else if (elem.type === "list") {
+        for (const item of elem.items) {
+          contentParts.push(`- ${item}`);
+        }
+      }
+    }
+
+    if (contentParts.length === 0) {
+      ambiguousHeadings.push(headingElem.text);
+    }
+
+    sections.push({
+      title: headingElem.text,
+      content: contentParts.join("\n\n"),
+    });
+  }
+
+  return sections.length > 0
+    ? {
+      introductoryContent: introParts.length > 0 ? introParts.join("\n\n") : null,
+      sections,
+      usedElementIndices: used,
+      ambiguousHeadings,
+    }
+    : null;
+}
+
+/**
  * Extract structured content from a .docx Buffer.
  * Supports both table-based templates (e.g. Blog Content Entry Template)
  * and labeled / freeform documents.
@@ -563,10 +844,24 @@ export async function extractDocx(
   // Step 1: Parse table key-value pairs (highest fidelity for structured templates)
   const structuredTableIndices = new Set<number>();
   const tablePairs = parseTables(html);
-  for (const { key, value, tableIndex } of tablePairs) {
-    if (assignField(parsedFields, fieldStates, key, value)) {
-      structuredTableIndices.add(tableIndex);
-    } else if (value.trim()) {
+  const contentNewTable = parseContentNewTable(html);
+  if (contentNewTable) {
+    const tableSections = extractTableSections(contentNewTable.pairs);
+    if (tableSections.length > 0) {
+      parsedFields.contentnew = tableSections;
+      fieldStates.contentnew = {
+        status: "extracted",
+        reason: `Extracted ${tableSections.length} repeatable section(s) from table.`,
+        rawValue: JSON.stringify(tableSections),
+      };
+    }
+  }
+
+  const contentNewPairs = contentNewTable?.pairs ?? [];
+  for (const { key, value } of tablePairs) {
+    if (contentNewPairs.some((pair) => pair.key === key && pair.value === value) &&
+        (normalizeKey(key) === "title" || normalizeKey(key) === "content")) continue;
+    if (!assignField(parsedFields, fieldStates, key, value) && value.trim()) {
       unmappedFields.push({ label: key, value });
     }
   }
@@ -618,7 +913,33 @@ export async function extractDocx(
     }
   }
 
-  // Step 3: Parse non-table elements and filter template artifacts
+  // Step 4: Parse non-table elements and filter template artifacts
+  const explicitSectionTitleIndices = new Set<number>();
+  for (let i = 0; i < elements.length; i++) {
+    const el = elements[i];
+    if (
+      el.type === "paragraph" &&
+      /(?:^|\r?\n|\*\*)\s*(?:Title|Section Title)\s*[:—–-]/i.test(el.text)
+    ) {
+      explicitSectionTitleIndices.add(i);
+    }
+  }
+  const firstExplicitSectionTitleIndex =
+    Array.from(explicitSectionTitleIndices)[0] ?? -1;
+  const hasExplicitSections =
+    explicitSectionTitleIndices.size >= 2 ||
+    elements.some(
+      (el) => el.type === "paragraph" && parseSectionsFromText(el.text).length > 0,
+    ) ||
+    (explicitSectionTitleIndices.size === 1 &&
+      elements.some(
+        (el, index) =>
+          index < firstExplicitSectionTitleIndex &&
+          el.type === "heading" &&
+          el.level === 1,
+      )
+    );
+
   const usedElementIndices = new Set<number>();
   let currentMetadataSection:
     "faq" | "author" | "seo" | "form" | "button" | null = null;
@@ -689,6 +1010,17 @@ export async function extractDocx(
 
     if (elem.type === "paragraph") {
       const labeled = parseLabeledField(elem.text);
+      if (
+        labeled &&
+        (normalizeKey(labeled.label) === "title" ||
+          normalizeKey(labeled.label) === "content" ||
+          normalizeKey(labeled.label) === "sectiontitle")
+      ) {
+        if (hasExplicitSections || parsedFields.title) {
+          // Leave for section extraction
+          continue;
+        }
+      }
       const next = elements[i + 1];
       if (
         labeled &&
@@ -714,6 +1046,13 @@ export async function extractDocx(
       (elem.type === "heading" || elem.type === "paragraph") &&
       FIELD_ALIASES[normalizeKey(elemText)]
     ) {
+      // A Contentnew heading names a container/section in the template; its
+      // following Title and Content rows are parsed as component entries.
+      // Treating the heading as a field label here creates a false duplicate.
+      if (normalizeKey(elemText) === "contentnew") {
+        usedElementIndices.add(i);
+        continue;
+      }
       const next = elements[i + 1];
       if (next && next.type !== "heading") {
         const value = next.type === "list" ? next.items.join("\n") : next.text;
@@ -871,15 +1210,60 @@ export async function extractDocx(
     };
   }
 
-  // Step 6: Resolve Content (main body ONLY)
-  // If content was explicitly set via table, prioritize that
+  // Save used elements before section detection so full body elements can still be resolved for doc.content
+  const usedBeforeSections = new Set(usedElementIndices);
+
+  // Step 6.5: Extract Repeatable ContentNew Sections (before resolving general content)
+  let introductoryContent: string | null = null;
+  const ambiguousHeadings: string[] = [];
+
+  if (!parsedFields.contentnew && fieldStates.contentnew.status === "missing") {
+    const explicitResult = detectExplicitSections(
+      elements,
+      usedElementIndices,
+      titleElemIndex,
+      title,
+      description,
+    );
+    if (explicitResult && explicitResult.sections.length > 0) {
+      parsedFields.contentnew = explicitResult.sections;
+      fieldStates.contentnew = {
+        status: "extracted",
+        reason: `Extracted ${explicitResult.sections.length} repeatable section(s).`,
+        rawValue: JSON.stringify(explicitResult.sections),
+      };
+      introductoryContent = explicitResult.introductoryContent;
+      for (const idx of explicitResult.usedElementIndices) {
+        usedElementIndices.add(idx);
+      }
+    } else {
+      const headingResult = detectHeadingSections(elements, usedElementIndices, titleElemIndex);
+      if (headingResult && headingResult.sections.length > 0) {
+        parsedFields.contentnew = headingResult.sections;
+        fieldStates.contentnew = {
+          status: "extracted",
+          reason: `Extracted ${headingResult.sections.length} repeatable section(s) from document headings.`,
+          rawValue: JSON.stringify(headingResult.sections),
+        };
+        introductoryContent = headingResult.introductoryContent;
+        if (headingResult.ambiguousHeadings.length > 0) {
+          ambiguousHeadings.push(...headingResult.ambiguousHeadings);
+        }
+        for (const idx of headingResult.usedElementIndices) {
+          usedElementIndices.add(idx);
+        }
+      }
+    }
+  }
+
+  // Step 7: Resolve Content (main body)
+  // doc.content holds the full body content of the document
   let content = parsedFields.content ?? null;
 
-  // Otherwise, collect remaining non-metadata, non-template elements
-  if (!content && fieldStates.content.status === "missing") {
+  if (!content) {
     const contentParts: string[] = [];
     for (let i = 0; i < elements.length; i++) {
-      if (usedElementIndices.has(i)) continue;
+      if (usedBeforeSections.has(i)) continue;
 
       const elem = elements[i];
       if (elem.type === "heading") {
@@ -897,13 +1281,37 @@ export async function extractDocx(
     }
     content = contentParts.length > 0 ? contentParts.join("\n\n") : null;
   }
-  parsedFields.content = content;
-  if (content && fieldStates.content.status === "missing") {
-    fieldStates.content = {
-      status: "extracted",
-      reason: "Preserved from remaining document body content.",
-      rawValue: content,
-    };
+
+  // Keep explicitly supplied template fields authoritative. Only infer intro text
+  // from the document body when the template did not provide a root `content` value.
+  if (parsedFields.contentnew && Array.isArray(parsedFields.contentnew)) {
+    const hasExplicitContentField = fieldStates.content.status !== "missing";
+    if (hasExplicitContentField) {
+      // `parsedFields.content` was extracted from its own labeled field; do not
+      // replace it with inferred text (which may be null) just because contentNew exists.
+    } else if (introductoryContent) {
+      parsedFields.content = introductoryContent;
+      fieldStates.content = {
+        status: "extracted",
+        reason: "Preserved introductory blog content.",
+        rawValue: introductoryContent,
+      };
+    } else {
+      parsedFields.content = null;
+      fieldStates.content = {
+        status: "explicitly_empty",
+        reason: "All body content mapped to repeatable contentNew sections.",
+      };
+    }
+  } else {
+    parsedFields.content = content;
+    if (content && fieldStates.content.status === "missing") {
+      fieldStates.content = {
+        status: "extracted",
+        reason: "Preserved from remaining document body content.",
+        rawValue: content,
+      };
+    }
   }
 
   const referencedCoverIndex = fieldStates.cover.imageIndex;
@@ -942,6 +1350,7 @@ export async function extractDocx(
     parsedFields,
     fieldStates,
     unmappedFields,
+    ambiguousHeadings: ambiguousHeadings.length > 0 ? ambiguousHeadings : undefined,
   };
 }
 
@@ -992,12 +1401,12 @@ function annotateImageLocations(html: string, images: ExtractedImage[]): void {
     const end = hasTableRow
       ? rowEnd + "</tr>".length
       : (() => {
-          const after = html.slice(match.index + match[0].length);
-          const elementEnd = after.search(/<\/(?:p|h[1-6])>/i);
-          return (
-            match.index + match[0].length + (elementEnd >= 0 ? elementEnd : 0)
-          );
-        })();
+        const after = html.slice(match.index + match[0].length);
+        const elementEnd = after.search(/<\/(?:p|h[1-6])>/i);
+        return (
+          match.index + match[0].length + (elementEnd >= 0 ? elementEnd : 0)
+        );
+      })();
     const context = start >= 0 ? html.slice(start, end) : match[0];
     const nearbyText = stripHtml(context)
       .replace(/\[IMAGE_\d+\]/gi, "")

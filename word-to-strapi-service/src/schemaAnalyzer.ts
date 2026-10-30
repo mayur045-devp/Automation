@@ -73,6 +73,7 @@ const FIELD_TYPE_HINTS: Array<{
   { patterns: [/^count$/i, /^number$/i, /^quantity$/i, /^order$/i], type: 'integer', confidence: 'medium', reason: 'Numeric count fields map to integer type.' },
   { patterns: [/^enabled$/i, /^active$/i, /^published$/i, /^visible$/i, /^featured$/i], type: 'boolean', confidence: 'high', reason: 'True/false flags are boolean type.' },
   { patterns: [/^seo$/i, /^meta$/i, /^metatitle$/i, /^metadesc/i], type: 'component', confidence: 'medium', reason: 'SEO fields are best represented as a component.' },
+  { patterns: [/^contentnew$/i], type: 'component', confidence: 'high', reason: 'Repeatable contentNew component.' },
 ];
 
 /** Infer Strapi type from a field name and its value */
@@ -206,6 +207,23 @@ export function analyzeDocumentForSchema(
           confidence: 'medium',
           reason: 'SEO sub-fields detected; mapped to an seo component. You must create the component separately if it does not exist.',
           uncertain: true,
+        });
+      }
+      continue;
+    }
+
+    // Handle repeatable contentNew component
+    if (fieldKey === 'contentnew') {
+      if (!usedNames.has('contentnew')) {
+        usedNames.add('contentnew');
+        inferredFields.push({
+          name: 'contentnew',
+          type: 'component',
+          attributes: { type: 'component', component: 'component.content-new', repeatable: true },
+          sourceValue: null,
+          confidence: 'high',
+          reason: 'Document sections mapped to repeatable contentNew component.',
+          uncertain: false,
         });
       }
       continue;
@@ -454,12 +472,18 @@ export function compareDocumentSchema(
       const nestedComponentMapping = Boolean(
         mapping?.strapiField?.includes('.') && existing.type === 'component'
       );
+      const isComponentMatch = Boolean(
+        existing.type === 'component' &&
+        (mapping?.kind === 'component' ||
+         mapping?.dataType?.includes('component') ||
+         proposed.type === 'component')
+      );
       const sameType = existing.type === proposed.type;
       const compatibleText = compatibleTextTypes.has(existing.type) &&
         compatibleTextTypes.has(proposed.type);
       const compatibleNumber = compatibleNumberTypes.has(existing.type) &&
         compatibleNumberTypes.has(proposed.type);
-      if (nestedComponentMapping || sameType || compatibleText || compatibleNumber) {
+      if (nestedComponentMapping || isComponentMatch || sameType || compatibleText || compatibleNumber) {
         diff.compatibleFields.push({
           documentField: proposed.name,
           schemaField: existing.name,

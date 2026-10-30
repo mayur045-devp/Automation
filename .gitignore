@@ -22,3 +22,11 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+
+# Project documentation & notes
+project-understanding
+project-understanding/
+*project-understanding*
+PROJECT_TECHNICAL_DOCUMENTATION.md
+**/PROJECT_TECHNICAL_DOCUMENTATION.md

@@ -38,6 +38,7 @@ The mappings below use the current `my-strapi/src/api/article/content-types/arti
 | Date | `date` | `date` | Accept only a real `YYYY-MM-DD` date |
 | Authordata | `authordata` | `Authordata.authorName` | Map a provided author name to the component; no relation or media identifier is inferred |
 | Category Name | `categoryname` | `categoryName` (string) | Map as a scalar |
+| Content New | `contentnew` | `contentNew` (component with Blocks) | Extract each explicit section title/content pair or document heading with its following body, preserve document order, and convert the body into Strapi Blocks |
 | Content New | DOCX sections | `contentNew` (repeatable `component.content-new`) | One ordered `{ title, content }` text component per detected section; tables are represented as readable rows |
 | Button | `button` | `button.link` | Map only URL/path-shaped values |
 | Button Title | `buttontitle` | `buttontitle` (string) | Map as a scalar |
@@ -59,6 +60,8 @@ For the checked-in component, `contentNew.content` is a Strapi text field. The i
 The expected REST payload remains Strapi 5's `{ "data": { ... } }` envelope, with `contentNew: [{ "title": "...", "content": "..." }]`. A collection without a compatible repeatable section component simply omits that content; it is not blocked for lacking an optional destination. Confirm re-fetches the created entry with components populated and compares saved values with the approved preview.
 
 The importer performs no schema writes or CMS writes during preview. Import confirmation is the only content-creation operation.
+
+The article title is taken from its labeled Title field or top-level document heading. Section titles inside the body are mapped to individual `contentNew` entries with their associated paragraphs, lists, and subheadings; they must not replace the article title or be uploaded as empty component entries.
 
 ## Preview request and response
 

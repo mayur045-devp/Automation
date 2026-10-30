@@ -193,6 +193,7 @@ export class StrapiClient {
       'populate[seo]': 'true',
       'populate[Authordata]': 'true',
       'populate[button]': 'true',
+      'populate[contentNew]': 'true',
     });
     const url = `${this.baseUrl}/api/articles/${encodeURIComponent(documentId)}?${query.toString()}`;
     const res = await this.fetchWithTimeout(url, { headers: this.headers });

@@ -191,21 +191,41 @@ describe("buildStrapiPayload", () => {
     expect(payload.time).toBe("5 min read");
   });
 
-  it("accepts real Strapi field names for structureData, contentNew, and shareImage", () => {
-    const result = DocumentFieldsSchema.safeParse({
-      title: "Real field names example",
-      contentNew: [{ title: "Section 1", content: "Body text" }],
-      defaultSeo: {
-        structureData: { "@type": "Article" },
-        shareImage: "image-share.png",
+  it("uses the real Strapi repeatable contentNew array shape", () => {
+    const payload = buildStrapiPayload({
+      contentnew: [
+        { title: "Section One", content: "This is the first block." },
+        { title: "Section Two", content: "# Second heading\n\nMore detail." },
+      ],
+    });
+
+    expect(payload.contentNew).toEqual([
+      {
+        title: "Section One",
+        content: [{ type: "paragraph", children: [{ type: "text", text: "This is the first block." }] }],
+      },
+      {
+        title: "Section Two",
+        content: [
+          { type: "heading", level: 1, children: [{ type: "text", text: "Second heading" }] },
+          { type: "paragraph", children: [{ type: "text", text: "More detail." }] },
+        ],
+      },
+    ]);
+  });
+
+  it("rejects a single-object contentNew payload because Strapi expects a repeatable array", () => {
+    const result = validateArticlePayload({
+      Title: "Example",
+      contentNew: {
+        title: "Single section",
+        content: [{ type: "paragraph", children: [{ type: "text", text: "Body" }] }],
       },
     });
 
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.data.defaultSeo?.structureData).toEqual({ "@type": "Article" });
-      expect(result.data.contentNew).toEqual([{ title: "Section 1", content: "Body text" }]);
-      expect(result.data.defaultSeo?.shareImage).toBe("image-share.png");
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errors.some((issue) => issue.path.includes('contentNew'))).toBe(true);
     }
   });
 

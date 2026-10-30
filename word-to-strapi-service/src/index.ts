@@ -47,7 +47,7 @@ const STRAPI_URL = process.env.STRAPI_URL ?? 'http://localhost:1337';
 const STRAPI_API_TOKEN = process.env.STRAPI_API_TOKEN ?? '';
 const STRAPI_ADMIN_JWT = process.env.STRAPI_ADMIN_JWT ?? '';
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY ?? '';
-const GEMINI_MODEL = process.env.GEMINI_MODEL ?? 'gemini-1.5-flash';
+const GEMINI_MODEL = process.env.GEMINI_MODEL ?? 'gemini-3.8-flash';
 const IMPORT_API_KEY = process.env.IMPORT_API_KEY ?? '';
 const PORT = parseInt(process.env.PORT ?? '3001', 10);
 const MAX_FILE_SIZE_MB = 10;
@@ -201,6 +201,44 @@ app.post(
           filename: req.file.originalname,
         });
         return;
+      }
+
+      if (aiResult.payload.contentNew !== undefined && aiResult.payload.contentNew !== null) {
+        if (!Array.isArray(aiResult.payload.contentNew)) {
+          res.status(422).json({
+            error: 'Validation failed — contentNew must be an array of component objects',
+            validationErrors: [{ message: 'contentNew must be an array of component objects, not a string or object' }],
+            aiResult,
+          });
+          return;
+        }
+        for (let idx = 0; idx < aiResult.payload.contentNew.length; idx++) {
+          const item = (aiResult.payload.contentNew as any[])[idx];
+          if (!item || typeof item !== 'object') {
+            res.status(422).json({
+              error: 'Validation failed — invalid component item',
+              validationErrors: [{ message: `contentNew[${idx}] is not an object` }],
+              aiResult,
+            });
+            return;
+          }
+          if (item.title !== undefined && item.title !== null && typeof item.title !== 'string') {
+            res.status(422).json({
+              error: 'Validation failed — component title must be a string',
+              validationErrors: [{ message: `contentNew[${idx}].title must be a string` }],
+              aiResult,
+            });
+            return;
+          }
+          if (item.content !== undefined && item.content !== null && typeof item.content !== 'string') {
+            res.status(422).json({
+              error: 'Validation failed — contentNew content must be a string',
+              validationErrors: [{ message: `contentNew[${idx}].content must be a string` }],
+              aiResult,
+            });
+            return;
+          }
+        }
       }
 
       // Single types have one shared entry and do not support duplicate checks.
@@ -813,9 +851,18 @@ export function diffPayload(
       continue;
     }
     if (!matchesExpectedValue(val, act)) {
-      mismatches.push(
-        `${key}: expected "${String(val)?.substring(0, 60)}", got "${String(act)?.substring(0, 60)}"`
-      );
+      if (key === 'contentNew' && Array.isArray(val)) {
+        const actArr = Array.isArray(act) ? act : [];
+        if (val.length !== actArr.length) {
+          mismatches.push(`contentNew: expected ${val.length} component items, but Strapi saved ${actArr.length}`);
+        } else {
+          mismatches.push(`contentNew: component content or titles do not match the expected values.`);
+        }
+      } else {
+        mismatches.push(
+          `${key}: expected "${String(val)?.substring(0, 60)}", got "${String(act)?.substring(0, 60)}"`
+        );
+      }
     }
   }
   return mismatches;
