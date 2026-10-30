@@ -583,6 +583,7 @@ export interface ApiSohamSoham extends Struct.CollectionTypeSchema {
     draftAndPublish: true;
   };
   attributes: {
+    contentNew: Schema.Attribute.Component<'component.content-new', true>;
     createdAt: Schema.Attribute.DateTime;
     createdBy: Schema.Attribute.Relation<'oneToOne', 'admin::user'> &
       Schema.Attribute.Private;

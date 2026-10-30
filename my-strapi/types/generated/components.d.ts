@@ -109,7 +109,7 @@ export interface SeoSeo extends Struct.ComponentSchema {
       'images' | 'files' | 'videos' | 'audios',
       true
     >;
-    structureData: Schema.Attribute.String;
+    structureData: Schema.Attribute.JSON;
   };
 }
 

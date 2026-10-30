@@ -181,6 +181,7 @@ describe("buildStrapiPayload", () => {
       metaDescription: "SEO description",
       keywords: "ai, business",
       metaRobots: "index, follow",
+      structureData: '{"@type":"Article"}',
       structuredData: '{"@type":"Article"}',
       metaViewport: "width=device-width, initial-scale=1",
       canonicalURL: "https://example.test/article",

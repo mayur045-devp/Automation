@@ -10,5 +10,11 @@
     "draftAndPublish": true
   },
   "pluginOptions": {},
-  "attributes": {}
+  "attributes": {
+    "contentNew": {
+      "type": "component",
+      "component": "component.content-new",
+      "repeatable": true
+    }
+  }
 }

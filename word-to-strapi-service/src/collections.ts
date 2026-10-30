@@ -10,6 +10,11 @@ export interface ImportField {
   multiple?: boolean;
   allowedTypes?: string[];
   sourceField?: string;
+  componentUid?: string;
+  repeatable?: boolean;
+  enumValues?: string[];
+  componentFields?: ImportField[];
+  targetField?: string;
   note?: string;
 }
 
@@ -38,14 +43,60 @@ const VERIFIED_COLLECTIONS: readonly ImportCollection[] = [
     mapper: 'article',
     fields: [
       { name: 'Title', type: 'string', required: false, supported: true, sourceField: 'title' },
-      { name: 'slug', type: 'uid', required: false, supported: true, sourceField: 'slug' },
+      { name: 'slug', type: 'uid', required: false, supported: true, sourceField: 'slug', targetField: 'Title' },
       { name: 'description', type: 'text', required: false, supported: true, sourceField: 'description' },
       { name: 'content', type: 'richtext', required: false, supported: true, sourceField: 'content' },
       { name: 'date', type: 'date', required: false, supported: true, sourceField: 'date' },
-      { name: 'seo', type: 'component', required: false, supported: true, note: 'Supported through the verified SEO component mapping.' },
+      {
+        name: 'seo',
+        type: 'component',
+        required: false,
+        supported: true,
+        componentUid: 'seo.seo',
+        repeatable: false,
+        sourceField: 'defaultSeo',
+        componentFields: [
+          { name: 'metaTitle', type: 'string', required: false, supported: true, sourceField: 'defaultSeo.metaTitle' },
+          { name: 'metaDescription', type: 'string', required: false, supported: true, sourceField: 'defaultSeo.metaDescription' },
+          { name: 'keywords', type: 'text', required: false, supported: true, sourceField: 'defaultSeo.keywords' },
+          { name: 'metaRobots', type: 'string', required: false, supported: true, sourceField: 'defaultSeo.metaRobots' },
+          { name: 'metaViewport', type: 'string', required: false, supported: true, sourceField: 'defaultSeo.metaViewPort' },
+          { name: 'canonicalURL', type: 'string', required: false, supported: true, sourceField: 'defaultSeo.canonicalURL' },
+          { name: 'structureData', type: 'json', required: false, supported: true, sourceField: 'defaultSeo.structureData' },
+          { name: 'metaImage', type: 'media', required: false, supported: true, multiple: true, allowedTypes: ['images', 'files', 'videos', 'audios'], sourceField: 'defaultSeo.shareImage' },
+          { name: 'metaSocial', type: 'media', required: false, supported: true, multiple: true, allowedTypes: ['images', 'files', 'videos', 'audios'] },
+          { name: 'shareImage', type: 'media', required: false, supported: false, multiple: true, allowedTypes: ['images', 'files', 'videos', 'audios'], sourceField: 'defaultSeo.shareImage' },
+        ],
+      },
       { name: 'coverImage', type: 'media', required: false, supported: true, multiple: false, allowedTypes: ['images'], sourceField: 'cover', note: 'Only an image explicitly referenced in the document Cover field is uploaded.' },
-      { name: 'Authordata', type: 'component', required: false, supported: true, note: 'Only the verified authorName component value is mapped.' },
-      { name: 'button', type: 'component', required: false, supported: true, note: 'Only the verified link component value is mapped.' },
+      {
+        name: 'Authordata',
+        type: 'component',
+        required: false,
+        supported: true,
+        componentUid: 'component.author-data',
+        repeatable: false,
+        sourceField: 'authordata',
+        componentFields: [
+          { name: 'title', type: 'string', required: false, supported: true },
+          { name: 'authorName', type: 'string', required: false, supported: true, sourceField: 'authordata' },
+          { name: 'Authordesignation', type: 'string', required: false, supported: true },
+          { name: 'image', type: 'media', required: false, supported: true, multiple: true, allowedTypes: ['images', 'files', 'videos', 'audios'] },
+        ],
+      },
+      {
+        name: 'button',
+        type: 'component',
+        required: false,
+        supported: true,
+        componentUid: 'component.button',
+        repeatable: false,
+        sourceField: 'button',
+        componentFields: [
+          { name: 'name', type: 'string', required: false, supported: true },
+          { name: 'link', type: 'string', required: false, supported: true, sourceField: 'button' },
+        ],
+      },
       { name: 'categoryName', type: 'string', required: false, supported: true, sourceField: 'categoryname' },
       { name: 'buttontitle', type: 'string', required: false, supported: true, sourceField: 'buttontitle' },
       { name: 'buttonsubtitle', type: 'string', required: false, supported: true, sourceField: 'buttonsubtitle' },
@@ -271,16 +322,78 @@ export function validateImportPayload(
     };
   }
 
-  const errors = collection.fields
-    .filter((field) => field.required)
-    .filter((field) => field.type !== 'media')
-    .filter((field) => {
-      const value = (result.data as Record<string, unknown>)[field.name];
-      return value === undefined || value === null || (typeof value === 'string' && !value.trim());
-    })
-    .map((field) => `Missing required field: ${field.name}`);
+  const errors: string[] = [];
+  collectRequiredFieldErrors(collection.fields, result.data as Record<string, unknown>, '', errors);
 
   return errors.length
     ? { success: false, errors }
     : { success: true, data: result.data as Record<string, unknown> };
+}
+
+function schemaForFields(fields: readonly ImportField[]): Record<string, z.ZodTypeAny> {
+  const shape: Record<string, z.ZodTypeAny> = {};
+  for (const field of fields) {
+    if (!field.supported || field.type === 'media' || field.type === 'relation') continue;
+    const schema = schemaForField(field);
+    if (schema) shape[field.name] = schema.optional();
+  }
+  return shape;
+}
+
+function schemaForField(field: ImportField): z.ZodTypeAny | undefined {
+  if (field.type === 'component') {
+    if (!field.componentFields) return undefined;
+    const objectSchema = z.object(schemaForFields(field.componentFields)).strict();
+    return field.repeatable ? z.array(objectSchema) : objectSchema;
+  }
+  if (['string', 'text', 'richtext', 'uid'].includes(field.type)) {
+    return z.string().nullable();
+  }
+  if (field.type === 'date') {
+    return z.string().refine(isValidIsoDate, 'Date must be a real date in YYYY-MM-DD format').nullable();
+  }
+  if (field.type === 'datetime') {
+    return z.string().datetime({ offset: true }).nullable();
+  }
+  if (field.type === 'integer') return z.number().int().nullable();
+  if (['float', 'decimal'].includes(field.type)) return z.number().finite().nullable();
+  if (field.type === 'boolean') return z.boolean().nullable();
+  if (field.type === 'email') return z.string().email().nullable();
+  if (field.type === 'enumeration') {
+    if (!field.enumValues?.length) return undefined;
+    return z.string().refine((value) => field.enumValues?.includes(value), {
+      message: `Value must be one of: ${field.enumValues.join(', ')}`,
+    }).nullable();
+  }
+  if (field.type === 'json') return z.unknown();
+  if (field.type === 'blocks') return z.array(z.record(z.unknown())).nullable();
+  return undefined;
+}
+
+function collectRequiredFieldErrors(
+  fields: readonly ImportField[],
+  data: Record<string, unknown>,
+  prefix: string,
+  errors: string[],
+): void {
+  for (const field of fields) {
+    const path = prefix ? `${prefix}.${field.name}` : field.name;
+    const value = data[field.name];
+    if (field.required && field.type !== 'media' &&
+      (value === undefined || value === null || (typeof value === 'string' && !value.trim()))) {
+      errors.push(`Missing required field: ${path}`);
+      continue;
+    }
+    if (field.type !== 'component' || !field.componentFields || value === undefined || value === null) continue;
+    const instances = Array.isArray(value) ? value : [value];
+    instances.forEach((instance, index) => {
+      if (!isRecord(instance)) return;
+      const componentPath = Array.isArray(value) ? `${path}[${index}]` : path;
+      collectRequiredFieldErrors(field.componentFields!, instance, componentPath, errors);
+    });
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

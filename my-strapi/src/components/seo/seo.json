@@ -31,9 +31,6 @@
         "audios"
       ]
     },
-    "structureData": {
-      "type": "string"
-    },
     "keywords": {
       "type": "text"
     },
@@ -55,6 +52,9 @@
         "videos",
         "audios"
       ]
+    },
+    "structureData": {
+      "type": "json"
     }
   },
   "config": {}

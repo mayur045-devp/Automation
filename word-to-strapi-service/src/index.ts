@@ -3,7 +3,7 @@ import express, { Request, Response, NextFunction } from 'express';
 import multer from 'multer';
 import path from 'path';
 import { extractDocx } from './extract';
-import { mapDocumentToArticle, mapDocumentToCollection } from './mapper';
+import { mapDocumentToCollection } from './mapper';
 import {
   getImportableCollections,
   getImportCollection,
@@ -62,6 +62,12 @@ function requireApiKey(req: Request, res: Response, next: NextFunction): void {
   }
   next();
 }
+
+app.use('/api/schema', requireApiKey, (_req: Request, res: Response) => {
+  res.status(410).json({
+    error: 'Schema changes are disabled. Create and maintain content types and components in Strapi, then refresh the collection list.',
+  });
+});
 
 // --- Multer: .docx only, max 10 MB ---
 const upload = multer({
@@ -180,31 +186,19 @@ app.post(
       // Phase 2: extract structured content
       const doc = await extractDocx(req.file.buffer, req.file.originalname);
 
-      // Each supported collection uses its verified target schema for extraction and mapping.
-      let aiResult: AiMappingResult | CollectionMappingResult;
-      if (collection.mapper === 'article') {
-        const articleResult = await mapDocumentToArticle(doc, GEMINI_API_KEY, GEMINI_MODEL);
-        const collectionResult = await mapDocumentToCollection(doc, collection, '', GEMINI_MODEL);
-        const extraPayload = Object.fromEntries(
-          Object.entries(collectionResult.payload)
-            .filter(([name]) => !Object.prototype.hasOwnProperty.call(articleResult.payload, name)),
-        );
-        aiResult = {
-          ...articleResult,
-          payload: { ...articleResult.payload, ...extraPayload } as typeof articleResult.payload,
-        };
-      } else {
-        aiResult = await mapDocumentToCollection(doc, collection, GEMINI_API_KEY, GEMINI_MODEL);
-      }
+      const mappingResult = await mapDocumentToCollection(
+        doc,
+        collection,
+        GEMINI_API_KEY,
+        GEMINI_MODEL,
+      );
 
-      const schemaDiff = compareDocumentSchema(doc, collection);
-
-      const validation = validateImportPayload(collection, aiResult.payload);
+      const validation = validateImportPayload(collection, mappingResult.payload);
       if (!validation.success) {
         res.status(422).json({
           error: 'Validation failed — no entry will be created',
           validationErrors: validation.errors.map((message) => ({ message })),
-          aiResult,
+          filename: req.file.originalname,
         });
         return;
       }
@@ -279,7 +273,7 @@ app.post(
         collection.uid,
         connectionOrigin,
         validation.data,
-        aiResult,
+        mappingResult,
         doc.images,
         req.file.originalname,
         doc,
@@ -293,19 +287,18 @@ app.post(
             displayName: collection.displayName,
             apiName: collection.apiName,
           },
+          documentName: req.file.originalname,
           payload: validation.data,
-          fields: aiResult.fields,
-          fieldStates: aiResult.fieldStates,
-          missingFields: aiResult.missingFields,
-          unmappedFields: aiResult.unmappedFields,
-          ambiguities: aiResult.ambiguities,
-          warnings: aiResult.warnings,
-          confidence: aiResult.confidence,
-          imageCount: doc.images.length,
           images: imagePreview,
-          schemaDiff,
-          wordCount: doc.metadata.wordCount,
           duplicateDocumentId,
+          debug: {
+            fieldStates: mappingResult.fieldStates,
+            missingRequiredFields: mappingResult.missingFields,
+            ambiguities: mappingResult.ambiguities,
+            warnings: mappingResult.warnings,
+            contentWarnings: doc.contentWarnings,
+            ignoredDocumentFields: doc.unmappedFields,
+          },
         },
       });
     } catch (err: any) {
@@ -378,10 +371,6 @@ app.post('/api/import/confirm', requireApiKey, async (req: Request, res: Respons
 
     // Resolve image assignments
     // Priority: 1. manual imageAssignments from frontend, 2. auto-detected from fieldStates
-    const articleResult = collection.mapper === 'article'
-      ? pending.aiResult as AiMappingResult
-      : undefined;
-
     // Build a map of fieldName -> image to upload
     const mediaUploads: Array<{ fieldName: string; image: typeof pending.images[0] }> = [];
 
@@ -424,9 +413,7 @@ app.post('/api/import/confirm', requireApiKey, async (req: Request, res: Respons
         candidate.type === 'media' && candidate.supported)) {
         const sourceField = field.sourceField ?? field.name;
         const imageIndex = pending.document?.fieldStates[sourceField]?.imageIndex ??
-          (articleResult && sourceField === 'cover'
-            ? articleResult.fieldStates.cover?.imageIndex
-            : (pending.aiResult as CollectionMappingResult).fieldStates[field.name]?.imageIndex);
+          (pending.aiResult as CollectionMappingResult).fieldStates[field.name]?.imageIndex;
         if (imageIndex === undefined) continue;
         const image = pending.images.find((candidate) => candidate.index === imageIndex);
         if (!image) throw new Error(`Media field "${field.name}" references unavailable image ${imageIndex}.`);
@@ -437,7 +424,10 @@ app.post('/api/import/confirm', requireApiKey, async (req: Request, res: Respons
     const unassignedImages = pending.images
       .filter((image) => !assignedImageIndexes.has(image.index))
       .map((image) => image.index);
-    if (unassignedImages.length > 0 && skipUnassignedImages !== true) {
+    const hasSupportedMediaField = collection.fields.some((field) =>
+      field.type === 'media' && field.supported,
+    );
+    if (hasSupportedMediaField && unassignedImages.length > 0 && skipUnassignedImages !== true) {
       res.status(422).json({
         error: `Images ${unassignedImages.join(', ')} are not assigned to a media field. Assign them or explicitly confirm skipping unassigned images.`,
       });
@@ -452,9 +442,7 @@ app.post('/api/import/confirm', requireApiKey, async (req: Request, res: Respons
     }
 
     // Phase 5: create draft (drafts only, never published)
-    const created = collection.mapper === 'article'
-      ? await strapi.createDraft(validation.data as import('./schema').ArticlePayload)
-      : await strapi.createDraftForCollection(collection, validation.data);
+    const created = await strapi.createDraftForCollection(collection, validation.data);
     createdDocumentId = created.documentId;
     createdAdminLink = created.adminLink;
     console.log(`[confirm] Created ${collection.uid} draft documentId=${created.documentId}`);
@@ -842,7 +830,7 @@ if (require.main === module) {
     console.log(`[word-to-strapi-service] Running on http://localhost:${PORT}`);
     console.log(`  Strapi URL: ${STRAPI_URL}`);
     console.log(`  Strapi API token: ${STRAPI_API_TOKEN ? '*** (set)' : '⚠ NOT SET'}`);
-    console.log(`  Strapi Admin JWT: ${STRAPI_ADMIN_JWT ? '*** (set)' : '⚠ NOT SET — dynamic discovery + schema creation unavailable'}`);
+    console.log(`  Strapi Admin JWT: ${STRAPI_ADMIN_JWT ? '*** (set)' : '⚠ NOT SET — live collection discovery unavailable'}`);
     console.log(`  Gemini key: ${GEMINI_API_KEY ? '*** (set)' : '⚠ NOT SET — using rule-based fallback'}`);
   });
 }

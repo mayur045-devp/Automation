@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import http from 'http';
-import FormData from 'form-data';
 import app from './index';
 import { clearDynamicCollectionsCache } from './collections';
 
@@ -9,21 +8,6 @@ const authHeaders = {
   'x-import-key': API_KEY,
   'Content-Type': 'application/json',
 };
-
-async function createTestDocxBuffer(title: string, description: string): Promise<Buffer> {
-  const { Document, Paragraph, TextRun, HeadingLevel, Packer } = await import('docx');
-  const doc = new Document({
-    sections: [
-      {
-        children: [
-          new Paragraph({ text: title, heading: HeadingLevel.HEADING_1 }),
-          new Paragraph({ children: [new TextRun({ text: description })] }),
-        ],
-      },
-    ],
-  });
-  return Packer.toBuffer(doc);
-}
 
 describe('API Routes Integration Tests', () => {
   let server: http.Server;
@@ -70,15 +54,13 @@ describe('API Routes Integration Tests', () => {
   });
 
   describe('GET /api/schema/admin-status', () => {
-    it('returns configured=false when STRAPI_ADMIN_JWT is unset', async () => {
+    it('does not expose schema administration through the import service', async () => {
       const res = await fetch(`${baseUrl}/api/schema/admin-status`, {
         headers: { 'x-import-key': API_KEY },
       });
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(410);
       const data = await res.json();
-      expect(typeof data.configured).toBe('boolean');
-      expect(typeof data.valid).toBe('boolean');
-      expect(typeof data.message).toBe('string');
+      expect(data.error).toMatch(/Schema changes are disabled/i);
     });
   });
 
@@ -108,101 +90,19 @@ describe('API Routes Integration Tests', () => {
     });
   });
 
-  describe('POST /api/schema/analyze', () => {
-    it('returns 400 when no file is uploaded', async () => {
-      const res = await fetch(`${baseUrl}/api/schema/analyze`, {
-        method: 'POST',
-        headers: { 'x-import-key': API_KEY },
-      });
-      expect(res.status).toBe(400);
-      const data = await res.json();
-      expect(data.error).toMatch(/no file/i);
-    });
-
-    it('analyzes docx file and returns proposed schema', async () => {
-      const buffer = await createTestDocxBuffer('Product Catalog Item', 'High performance widget for development.');
-      const form = new FormData();
-      form.append('file', buffer, {
-        filename: 'catalog-item.docx',
-        contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      });
-
-      const res = await fetch(`${baseUrl}/api/schema/analyze`, {
-        method: 'POST',
-        body: form.getBuffer(),
-        headers: {
-          ...form.getHeaders(),
-          'x-import-key': API_KEY,
-        },
-      });
-
-      expect(res.status).toBe(200);
-      const data = await res.json();
-      expect(data.proposed).toBeDefined();
-      expect(data.proposed.displayName).toBeDefined();
-      expect(data.proposed.kind).toBeDefined();
-      expect(Array.isArray(data.proposed.fields)).toBe(true);
-      expect(data.proposed.fields.length).toBeGreaterThan(0);
-      expect(data.filename).toBe('catalog-item.docx');
-    });
-  });
-
-  describe('POST /api/schema/create', () => {
-    it('rejects schema creation when confirmed is not true', async () => {
-      const res = await fetch(`${baseUrl}/api/schema/create`, {
-        method: 'POST',
-        headers: authHeaders,
-        body: JSON.stringify({
-          payload: {
-            contentType: {
-              displayName: 'Test Event',
-              singularName: 'testevent',
-              pluralName: 'testevents',
-              kind: 'collectionType',
-              attributes: { title: { type: 'string', required: true } },
-            },
-          },
-          confirmed: false,
-        }),
-      });
-      expect(res.status).toBe(400);
-      const data = await res.json();
-      expect(data.error).toMatch(/confirmed: true/i);
-    });
-
-    it('rejects schema creation when payload is missing', async () => {
-      const res = await fetch(`${baseUrl}/api/schema/create`, {
-        method: 'POST',
-        headers: authHeaders,
-        body: JSON.stringify({
-          confirmed: true,
-        }),
-      });
-      expect(res.status).toBe(400);
-      const data = await res.json();
-      expect(data.error).toMatch(/payload is required/i);
-    });
-
-    it('returns 503 or 401 when admin JWT is not configured', async () => {
-      const res = await fetch(`${baseUrl}/api/schema/create`, {
-        method: 'POST',
-        headers: authHeaders,
-        body: JSON.stringify({
-          payload: {
-            contentType: {
-              displayName: 'Test Event',
-              singularName: 'testevent',
-              pluralName: 'testevents',
-              kind: 'collectionType',
-              attributes: { title: { type: 'string', required: true } },
-            },
-          },
-          confirmed: true,
-        }),
-      });
-      expect([400, 401, 503]).toContain(res.status);
-      const data = await res.json();
-      expect(data.error).toBeDefined();
+  describe('Schema changes remain disabled', () => {
+    it('rejects schema analysis, creation, and updates without contacting Content-Type Builder', async () => {
+      for (const route of ['/api/schema/analyze', '/api/schema/create', '/api/schema/apply']) {
+        const res = await fetch(`${baseUrl}${route}`, {
+          method: 'POST',
+          headers: authHeaders,
+          body: JSON.stringify({ confirmed: true, payload: {}, approvedFields: ['title'] }),
+        });
+        expect(res.url).toContain(route);
+        expect(res.status).toBe(410);
+        const data = await res.json();
+        expect(data.error).toMatch(/Schema changes are disabled/i);
+      }
     });
   });
 

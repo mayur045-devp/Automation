@@ -63,7 +63,7 @@
 
   <!-- Top nav -->
   <nav style="border-bottom: 1px solid var(--border); backdrop-filter: blur(16px); background: rgba(10,10,15,0.8); position: sticky; top: 0; z-index: 50;">
-    <div class="mx-auto px-6 py-4 flex items-center justify-between" style="max-width: 1200px;">
+    <div class="mx-auto px-6 py-4 flex items-center justify-between site-nav-inner" style="max-width: 1200px;">
       <div class="flex items-center gap-3">
         <!-- Logo -->
         <div class="w-8 h-8 rounded-lg flex items-center justify-center"
@@ -128,7 +128,6 @@
       {connectionStatus}
       connectionOrigin={GRAPHQL_ORIGIN}
       {connectionVersion}
-      reconnect={connect}
     />
   {:else}
 
