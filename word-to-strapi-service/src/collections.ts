@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { validateArticlePayload } from './schema';
+import { validateArticlePayload, StrapiArticlePayloadSchema } from './schema';
 import type { DynamicImportCollection } from './dynamicCollections';
 
 export interface ImportField {
@@ -51,7 +51,7 @@ const VERIFIED_COLLECTIONS: readonly ImportCollection[] = [
       { name: 'buttonsubtitle', type: 'string', required: false, supported: true, sourceField: 'buttonsubtitle' },
       { name: 'time', type: 'string', required: false, supported: true, sourceField: 'time' },
       { name: 'tital_blog_category', type: 'relation', required: false, supported: false, note: 'Relations require explicit resolution; document text is never treated as an ID.' },
-      { name: 'contentNew', type: 'component', required: false, supported: false, note: 'Structured Blocks content is not inferred from plain text.' },
+      { name: 'contentNew', type: 'component', required: false, supported: true, sourceField: 'contentnew', note: 'Repeatable component entries with title and plain text content.' },
       { name: 'polldata', type: 'component', required: false, supported: false },
       { name: 'Quizedata', type: 'component', required: false, supported: false },
     ],
@@ -175,16 +175,19 @@ export function validateImportPayload(
 ): { success: true; data: Record<string, unknown> } | { success: false; errors: string[] } {
   if (collection.mapper === 'article') {
     if (!isRecord(payload)) return { success: false, errors: ['Payload must be an object.'] };
-    const articleKeys = new Set([
-      'Title', 'slug', 'description', 'content', 'date', 'Authordata',
-      'categoryName', 'button', 'seo',
-    ]);
+    const articleKeys = new Set(Object.keys(StrapiArticlePayloadSchema.shape));
     const extraFields = Object.keys(payload).filter((name) => !articleKeys.has(name));
     const extraDescriptors = extraFields.map((name) =>
       collection.fields.find((field) => field.name === name && field.supported && field.type !== 'media'));
     const unknownFields = extraFields.filter((_name, index) => !extraDescriptors[index]);
     if (unknownFields.length > 0) {
-      return { success: false, errors: unknownFields.map((name) => `Unsupported field: ${name}`) };
+      return {
+        success: false,
+        errors: unknownFields.map((name) => {
+          const proposedType = inferTypeName(payload[name]);
+          return `Unsupported field: ${name} (proposed type: ${proposedType}). Remove it before sending the payload to Strapi.`;
+        }),
+      };
     }
 
     const articlePayload = Object.fromEntries(
@@ -244,6 +247,16 @@ export function validateImportPayload(
     if (field.type === 'boolean') return z.boolean().nullable().optional();
     if (field.type === 'email') return z.string().email().nullable().optional();
     return undefined;
+  }
+
+  function inferTypeName(value: unknown): string {
+    if (Array.isArray(value)) return `array<${inferTypeName(value[0])}>`;
+    if (value === null) return 'null';
+    if (typeof value === 'string') return 'string';
+    if (typeof value === 'number') return 'number';
+    if (typeof value === 'boolean') return 'boolean';
+    if (typeof value === 'object') return 'object';
+    return typeof value;
   }
 
   function isRecord(value: unknown): value is Record<string, unknown> {

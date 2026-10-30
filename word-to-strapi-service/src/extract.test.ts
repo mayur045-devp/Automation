@@ -299,7 +299,22 @@ async function getBlogContentEntryTemplateDocxBuffer(): Promise<Buffer> {
 
 describe('extractDocx', () => {
   it('does not mistake hyphenated or em-dash body prose for unknown field labels', async () => {
-    const buffer = await readFile(new URL('../sample-article.docx', import.meta.url));
+    const { Document, Paragraph, TextRun, HeadingLevel, Packer } = await import('docx');
+    const testDoc = new Document({
+      sections: [{
+        children: [
+          new Paragraph({ text: 'Climate Change Report', heading: HeadingLevel.HEADING_1 }),
+          new Paragraph({ text: 'A comprehensive summary of recent climate commitments.' }),
+          new Paragraph({
+            children: [
+              new TextRun('Global net-zero targets require immediate structural changes.'),
+              new TextRun(' This is not a distant promise — it is happening now.'),
+            ],
+          }),
+        ],
+      }],
+    });
+    const buffer = await Packer.toBuffer(testDoc);
     const doc = await extractDocx(buffer, 'sample-article.docx');
 
     expect(doc.unmappedFields).toHaveLength(0);

@@ -44,7 +44,7 @@ The mappings below use the current `my-strapi/src/api/article/content-types/arti
 | Date | `date` | `date` | Accept only a real `YYYY-MM-DD` date |
 | Authordata | `authordata` | `Authordata.authorName` | Map a provided author name to the component; no relation or media identifier is inferred |
 | Category Name | `categoryname` | `categoryName` (string) | Map as a scalar |
-| Content New | `contentnew` | `contentNew` (component with Blocks) | Retain for review; do not invent a Blocks structure from plain text |
+| Content New | `contentnew` | `contentNew` (component with Blocks) | Extract each explicit section title/content pair or document heading with its following body, preserve document order, and convert the body into Strapi Blocks |
 | Button | `button` | `button.link` | Map only URL/path-shaped values |
 | Button Title | `buttontitle` | `buttontitle` (string) | Map as a scalar |
 | Button Subtitle | `buttonsubtitle` | `buttonsubtitle` (string) | Map as a scalar |
@@ -55,6 +55,8 @@ The mappings below use the current `my-strapi/src/api/article/content-types/arti
 | Popularity Name | `popularityname` | No attribute in current Article schema | Retain for review; exclude from CMS payload |
 
 These are explicit mappings, not automatic camel-case conversions. The Strapi schema currently contains no declared required attributes, so the import does not invent or enforce additional required values.
+
+The article title is taken from its labeled Title field or top-level document heading. Section titles inside the body are mapped to individual `contentNew` entries with their associated paragraphs, lists, and subheadings; they must not replace the article title or be uploaded as empty component entries.
 
 ## Preview request and response
 
